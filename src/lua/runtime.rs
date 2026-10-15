@@ -819,7 +819,7 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(flashes, vec![("done".to_string(), 3.0)]);
         // ...and the outbox is empty afterwards, so nothing is delivered twice.
-        assert!(runtime.drain_outbox().0.is_empty());
+        assert_eq!(runtime.drain_outbox().0.len(), 0);
     }
 
     /// Runs `source` as a keybind handler against `world`'s store.
@@ -1073,7 +1073,7 @@ mod tests {
     fn empty_runtime_has_no_binds() {
         let world = TestWorld::default();
         let runtime = LuaRuntime::empty(&world.dispatch);
-        assert!(runtime.published_keybinds().is_empty());
+        assert_eq!(runtime.published_keybinds().len(), 0);
     }
 
     #[test]
