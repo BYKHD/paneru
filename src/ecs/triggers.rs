@@ -25,9 +25,9 @@ use crate::ecs::params::{ActiveDisplay, GlobalState, WindowCtx, Windows};
 use crate::ecs::state::PaneruState;
 use crate::ecs::workspace::RestoreFocusMarker;
 use crate::ecs::{
-    ActiveWorkspaceMarker, Bounds, DockPosition, Initializing, LayoutPosition, Position,
-    ResizeMarker, RestoreWindowState, Scrolling, SendMessageTrigger, SpawnCommandsExt,
-    VerifyWindowPosition, WidthRatio, WindowProperties,
+    ActiveWorkspaceMarker, Bounds, DockPosition, Initializing, LayoutPosition, OwnedEngine,
+    Position, PreTilingOrigin, ResizeMarker, RestoreWindowState, Scrolling, SendMessageTrigger,
+    SpawnCommandsExt, VerifyWindowPosition, WidthRatio, WindowProperties,
 };
 use crate::events::{DestroySource, Event};
 use crate::manager::{
@@ -1047,6 +1047,41 @@ fn give_away_focus(
         // guards would reject a fabricated event. focus_entity calls the
         // AX API to raise the neighbour and inserts FocusedMarker directly.
         commands.focus_entity(neighbour, true);
+    }
+}
+
+/// Owned mode: records where a newly discovered window is before Paneru first
+/// moves it. The spawn frame is read from AX before any layout commit.
+pub(super) fn capture_spawned_pre_tiling_origin(
+    trigger: On<Add, Window>,
+    owned: Option<Res<OwnedEngine>>,
+    windows: Query<&Window>,
+    mut commands: Commands,
+) {
+    let entity = trigger.event().entity;
+    if owned.is_some()
+        && let Ok(window) = windows.get(entity)
+        && let Ok(mut entity_commands) = commands.get_entity(entity)
+    {
+        entity_commands.try_insert(PreTilingOrigin(super::systems::unpadded_origin(window)));
+    }
+}
+
+/// Owned mode: a floating window rejoining the strip refreshes its preferred
+/// Stop position. Layout moves are deferred commands, so this frame is still
+/// the floating one. Leaving minimized/hidden keeps the earlier record.
+pub(super) fn capture_unfloated_pre_tiling_origin(
+    trigger: On<Remove, Unmanaged>,
+    owned: Option<Res<OwnedEngine>>,
+    windows: Query<(&Window, &Unmanaged)>,
+    mut commands: Commands,
+) {
+    let entity = trigger.event().entity;
+    if owned.is_some()
+        && let Ok((window, Unmanaged::Floating)) = windows.get(entity)
+        && let Ok(mut entity_commands) = commands.get_entity(entity)
+    {
+        entity_commands.try_insert(PreTilingOrigin(super::systems::unpadded_origin(window)));
     }
 }
 

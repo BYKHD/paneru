@@ -231,7 +231,9 @@ pub fn register_triggers(app: &mut bevy::app::App) {
         .add_observer(triggers::send_message_trigger)
         .add_observer(triggers::window_removal_trigger)
         .add_observer(triggers::cleanup_timeout_trigger)
-        .add_observer(restore::restore_window_state);
+        .add_observer(restore::restore_window_state)
+        .add_observer(triggers::capture_spawned_pre_tiling_origin)
+        .add_observer(triggers::capture_unfloated_pre_tiling_origin);
 }
 
 /// Marker component for the currently focused window.
@@ -506,6 +508,11 @@ pub struct Initializing;
 /// Opt-in owned launch; queries must wait for initial discovery to finish.
 #[derive(Resource)]
 pub struct OwnedEngine;
+
+/// Owned mode only: a window's unpadded AX origin from before Paneru tiled it,
+/// refreshed when a floating window rejoins the strip. Current-run data only.
+#[derive(Clone, Component, Copy, Debug)]
+pub struct PreTilingOrigin(pub Origin);
 
 /// Bevy event trigger for spawning new windows.
 #[derive(BevyEvent)]

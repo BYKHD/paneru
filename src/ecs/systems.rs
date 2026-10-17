@@ -29,12 +29,14 @@ use crate::ecs::layout::{Column, LayoutStrip};
 use crate::ecs::params::{ActiveDisplay, FrameActivity, Windows};
 use crate::ecs::{
     ActiveWorkspaceMarker, Bounds, BruteforceWindows, FlashMessage, FocusedMarker, Initializing,
-    LowPowerMode, MissionControlActive, Position, ReadDisplayProperties, RestoreWindowState,
-    Scrolling, SendMessageTrigger, SpawnCommandsExt, Unmanaged, WidthRatio, WindowProperties,
+    LowPowerMode, MissionControlActive, NativeFullscreenMarker, OwnedEngine, Position,
+    PreTilingOrigin, ReadDisplayProperties, RestoreWindowState, Scrolling, SendMessageTrigger,
+    SpawnCommandsExt, Unmanaged, WidthRatio, WindowProperties,
 };
 use crate::events::{Event, InputEvent};
 use crate::manager::{
-    Application, Display, Process, Window, WindowManager, WindowOS, bruteforce_windows,
+    Application, Display, Origin, Process, Size, Window, WindowManager, WindowOS,
+    bruteforce_windows,
 };
 use crate::overlay::{FlashMessageManager, OverlayManager};
 use crate::platform::input::TapHealth;
@@ -1153,18 +1155,71 @@ pub(super) fn commit_window_size(
         });
 }
 
+/// Top band of a window that must lie on its owning display before a recorded
+/// pre-tiling origin is reused on Stop (title bar reachable).
+const TITLE_STRIP_HEIGHT: i32 = 40;
+
+/// Window origin in AX coordinates, undoing Paneru's per-window padding.
+pub(super) fn unpadded_origin(window: &Window) -> Origin {
+    window.frame().min + Origin::new(window.horizontal_padding(), window.vertical_padding())
+}
+
+/// Stop placement for one tiled window, all in unpadded AX coordinates.
+/// Keeps the current size unless it does not fit `display` (then 90%, as the
+/// upstream cleanup does). Reuses `recorded` only if the title strip at that
+/// origin is inside `display`; otherwise centers. Returns origin and new size.
+fn stop_placement(
+    frame: IRect,
+    recorded: Option<Origin>,
+    display: IRect,
+) -> (Origin, Option<Size>) {
+    let mut size = frame.size();
+    let resized = (size.x > display.width() || size.y > display.height()).then(|| {
+        size = Size::new(
+            size.x.min(display.width() * 9 / 10),
+            size.y.min(display.height() * 9 / 10),
+        );
+        size
+    });
+    let reachable = |origin: Origin| {
+        let strip_max = origin + Size::new(size.x, size.y.min(TITLE_STRIP_HEIGHT));
+        origin.cmpge(display.min).all() && strip_max.cmple(display.max).all()
+    };
+    let origin = recorded
+        .filter(|&origin| reachable(origin))
+        .unwrap_or_else(|| display.min + (display.size() - size) / 2);
+    (origin, resized)
+}
+
 /// Restores user-visible window state before Paneru shuts down: clears any
 /// brightness dim, removes the dim/border overlay window, and centers every
 /// managed window on the display its frame center falls in.
+///
+/// An Emaki-owned engine instead returns only tiled windows to their
+/// [`PreTilingOrigin`] on the display owning their strip (see
+/// [`stop_placement`]); floating, minimized, hidden and native-fullscreen
+/// windows are left untouched.
+#[allow(clippy::type_complexity)]
 pub(super) fn cleanup_on_exit(
     mut exit_events: MessageReader<AppExit>,
-    mut all_windows: Query<&mut Window>,
+    mut all_windows: Query<(
+        Entity,
+        &mut Window,
+        Option<&PreTilingOrigin>,
+        Has<Unmanaged>,
+        Has<NativeFullscreenMarker>,
+    )>,
     displays: Query<&Display>,
+    strips: Query<(&LayoutStrip, Option<&ChildOf>)>,
+    owned: Option<Res<OwnedEngine>>,
     window_manager: Res<WindowManager>,
     mut overlay_mgr: Option<NonSendMut<OverlayManager>>,
 ) {
     for _ in exit_events.read() {
-        let ids = all_windows.iter().map(|w| w.id()).collect::<Vec<_>>();
+        let ids = all_windows
+            .iter()
+            .map(|(_, w, ..)| w.id())
+            .collect::<Vec<_>>();
         info!("exit cleanup: restoring {} window(s)", ids.len());
         window_manager.dim_windows(&ids, 0.0);
 
@@ -1177,10 +1232,10 @@ pub(super) fn cleanup_on_exit(
             return;
         }
 
-        for mut window in &mut all_windows {
+        for (entity, mut window, recorded, unmanaged, fullscreen) in &mut all_windows {
             let frame = window.frame();
             let center = frame.center();
-            let bounds = display_bounds
+            let physical_bounds = display_bounds
                 .iter()
                 .find(|b| {
                     center.x >= b.min.x
@@ -1190,6 +1245,36 @@ pub(super) fn cleanup_on_exit(
                 })
                 .copied()
                 .unwrap_or(display_bounds[0]);
+
+            if owned.is_some() {
+                let Some((_, parent)) = strips.iter().find(|(strip, _)| strip.contains(entity))
+                else {
+                    continue;
+                };
+                if unmanaged || fullscreen {
+                    continue;
+                }
+                // Logical owner: the strip's display, not where a parked frame sits.
+                // An orphaned strip (display disconnected) falls back to an available one.
+                let bounds = parent
+                    .and_then(|parent| displays.get(parent.parent()).ok())
+                    .map_or(physical_bounds, Display::bounds);
+                let padding = Origin::new(window.horizontal_padding(), window.vertical_padding());
+                let unpadded = IRect::from_corners(frame.min + padding, frame.max - padding);
+                let (origin, size) =
+                    stop_placement(unpadded, recorded.map(|recorded| recorded.0), bounds);
+                if let Some(size) = size {
+                    window.resize(size + 2 * padding);
+                }
+                info!(
+                    "exit cleanup: tiled window {} -> origin {origin:?}, recorded {}",
+                    window.id(),
+                    recorded.is_some_and(|recorded| recorded.0 == origin)
+                );
+                window.reposition(origin - padding);
+                continue;
+            }
+            let bounds = physical_bounds;
 
             let mut size = frame.size();
             if size.x > bounds.width() || size.y > bounds.height() {
@@ -1624,5 +1709,53 @@ mod tests {
         app.update();
 
         assert_eq!(tap_config.swipe_gesture_fingers(), Some(3));
+    }
+}
+
+#[cfg(test)]
+mod stop_placement_tests {
+    use super::stop_placement;
+    use bevy::math::{IRect, IVec2};
+
+    #[test]
+    fn stop_placement_reuses_only_reachable_recorded_origins() {
+        let display = IRect::new(0, 25, 1000, 800);
+        let frame = IRect::new(-3000, 25, -2600, 625); // parked off-screen, 400x600
+        // Reachable recorded origin is reused as-is, size unchanged.
+        assert_eq!(
+            stop_placement(frame, Some(IVec2::new(100, 200)), display),
+            (IVec2::new(100, 200), None)
+        );
+        // Title strip touching the edges exactly still counts.
+        assert_eq!(
+            stop_placement(frame, Some(IVec2::new(600, 25)), display).0,
+            IVec2::new(600, 25)
+        );
+        // Missing, under the menu bar, past the right edge, or on another display: centered.
+        for recorded in [
+            None,
+            Some(IVec2::new(100, 10)),
+            Some(IVec2::new(601, 200)),
+            Some(IVec2::new(1500, 200)),
+        ] {
+            assert_eq!(
+                stop_placement(frame, recorded, display),
+                (IVec2::new(300, 112), None)
+            );
+        }
+        // The window body may extend below the display; only the title strip must fit.
+        assert_eq!(
+            stop_placement(frame, Some(IVec2::new(100, 700)), display).0,
+            IVec2::new(100, 700)
+        );
+    }
+
+    #[test]
+    fn stop_placement_shrinks_only_windows_that_do_not_fit() {
+        let display = IRect::new(0, 25, 1000, 800);
+        let oversized = IRect::new(0, 0, 1200, 600);
+        let (origin, size) = stop_placement(oversized, Some(IVec2::new(0, 25)), display);
+        assert_eq!(size, Some(IVec2::new(900, 600)));
+        assert_eq!(origin, IVec2::new(0, 25));
     }
 }

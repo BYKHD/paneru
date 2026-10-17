@@ -712,6 +712,8 @@ impl MockState {
     #[allow(clippy::too_many_lines)]
     pub fn create_window_manager(&self) -> MockWindowManagerApi {
         let mut wm = MockWindowManagerApi::new();
+        // Exit cleanup clears dimming before placing windows.
+        wm.expect_dim_windows().return_const(());
 
         let s = self.clone();
         wm.expect_window_is_unordered().returning(move |window_id| {
