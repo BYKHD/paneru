@@ -788,12 +788,14 @@ pub fn setup_bevy_app(sender: EventSender, receiver: Receiver<Event>) -> Result<
     let mtm = platform_callbacks.main_thread_marker;
     let overlay_manager = OverlayManager::new(mtm);
     let flash_message_manager = FlashMessageManager::new(mtm);
-    let menu_bar_manager = MenuBarManager::new(mtm, menu_events);
     app.insert_non_send(platform_callbacks)
         .insert_non_send(overlay_manager)
         .insert_non_send(flash_message_manager)
-        .insert_non_send(menu_bar_manager)
         .insert_non_send(receiver);
+    // An Emaki-owned engine has no menu-bar item of its own: Emaki shows the only one.
+    if !crate::owned::enabled() {
+        app.insert_non_send(MenuBarManager::new(mtm, menu_events));
+    }
 
     // `CONFIGURATION_FILE` is `None` exactly when an `init.lua` took the TOML
     // file out of play, so copied rules have to be written in Lua instead.
