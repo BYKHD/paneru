@@ -21,6 +21,7 @@ mod lua;
 mod manager;
 mod menubar;
 mod overlay;
+mod owned;
 mod pasteboard;
 mod platform;
 mod reader;
@@ -182,7 +183,7 @@ pub enum QueryCmd {
 /// # Returns
 ///
 /// `Ok(())` if the application runs successfully, otherwise `Err(Error)`.
-fn main() -> Result<()> {
+fn main() -> Result<std::process::ExitCode> {
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(
@@ -204,7 +205,20 @@ fn main() -> Result<()> {
 
     match subcmd {
         SubCmd::Launch => {
+            let owner = owned::owner_pid()?;
+            if owner.is_some() && !check_ax_privilege() {
+                error!(
+                    "Emaki-owned engine requires Accessibility access; no permission UI was opened"
+                );
+                return Ok(std::process::ExitCode::from(77));
+            }
             let (sender, receiver) = EventSender::new();
+            if let Some(parent) = owner {
+                let exit_sender = sender.clone();
+                owned::watch_parent(parent, move || {
+                    let _ = exit_sender.send(Event::Exit);
+                })?;
+            }
             let sender_c = sender.clone();
             // bevy's `TerminalCtrlCHandlerPlugin` was not fast enough. maybe because of its use of `Relaxed` atomic variable?
             ctrlc::set_handler(move || {
@@ -212,18 +226,26 @@ fn main() -> Result<()> {
             })
             .expect("setting Ctrl-C handler should succeed");
             CommandReader::new(sender.clone()).start()?;
-            if !check_ax_privilege() && !wait_for_accessibility(sender.clone(), &receiver) {
-                return Ok(());
+            if !check_ax_privilege() {
+                // Access may have been revoked after the preflight above.
+                if owner.is_some() {
+                    error!(
+                        "Accessibility access was lost during owned startup; no permission UI was opened"
+                    );
+                    return Ok(std::process::ExitCode::from(77));
+                }
+                if !wait_for_accessibility(sender.clone(), &receiver) {
+                    return Ok(std::process::ExitCode::SUCCESS);
+                }
             }
             match objc2::rc::autoreleasepool(|_| setup_bevy_app(sender, receiver)) {
                 Ok(mut app) => {
                     app.run();
                 }
                 Err(err) => {
-                    error!(
-                        "Error launching Paneru: {err}.\nStopping the service for now. You can restart it again with 'paneru restart'."
-                    );
-                    service()?.stop()?;
+                    handle_launch_failure(owner.is_some(), err, || {
+                        service()?.stop().map_err(Into::into)
+                    })?;
                 }
             }
         }
@@ -240,7 +262,22 @@ fn main() -> Result<()> {
         SubCmd::Subscribe { json: _ } => client::run(ClientCommand::Subscribe)?,
         SubCmd::State { state } => client::run(ClientCommand::ScriptState(state.request()?))?,
     }
-    Ok(())
+    Ok(std::process::ExitCode::SUCCESS)
+}
+
+fn handle_launch_failure(
+    owned: bool,
+    err: errors::Error,
+    stop_service: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if owned {
+        error!("Error launching Emaki-owned Paneru: {err}; upstream service untouched");
+        return Err(err);
+    }
+    error!(
+        "Error launching Paneru: {err}.\nStopping the service for now. You can restart it again with 'paneru restart'."
+    );
+    stop_service()
 }
 
 fn wait_for_accessibility(sender: EventSender, receiver: &Receiver<Event>) -> bool {
@@ -376,5 +413,30 @@ fn maybe_warn_deprecated_options_for_service(subcmd: &SubCmd) {
                 path.display()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod owned_launch_tests {
+    use super::*;
+
+    #[test]
+    fn owned_setup_failure_returns_original_error_without_service_control() {
+        let result =
+            handle_launch_failure(true, errors::Error::InvalidConfig("probe".into()), || {
+                panic!("owned setup failure must never control a service")
+            });
+        assert!(matches!(result, Err(errors::Error::InvalidConfig(message)) if message == "probe"));
+    }
+
+    #[test]
+    fn ordinary_setup_failure_keeps_service_cleanup() {
+        let called = std::cell::Cell::new(false);
+        handle_launch_failure(false, errors::Error::Generic("probe".into()), || {
+            called.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(called.get());
     }
 }

@@ -36,6 +36,7 @@ impl Service {
     ///
     /// `Ok(Self)` if the service is created successfully, otherwise `Err(Error)` if the executable path or home directory cannot be found.
     pub fn try_new(name: &str) -> Result<Self> {
+        crate::owned::reject_service_control()?;
         let home_dir = env::home_dir().ok_or(Error::new(
             ErrorKind::NotFound,
             "Cannot find home directory.",
@@ -213,6 +214,7 @@ impl Service {
     /// Used by the in-daemon restart command so launchctl stop/start runs outside
     /// the process being stopped.
     pub fn request_restart() -> Result<()> {
+        crate::owned::reject_service_control()?;
         let bin_path = exe_path().ok_or(Error::new(
             ErrorKind::NotFound,
             "Cannot find current executable path.",
