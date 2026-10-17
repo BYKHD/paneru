@@ -16,7 +16,7 @@ use crate::ecs::state::{
     PaneruActiveState, PaneruQueryState, PaneruVirtualWorkspaceState, PaneruWindowState,
     QueryStateParams, StateEvent,
 };
-use crate::ecs::{ActiveWorkspaceMarker, FocusedMarker, Unmanaged};
+use crate::ecs::{ActiveWorkspaceMarker, FocusedMarker, Initializing, OwnedEngine, Unmanaged};
 use crate::events::Event;
 use crate::platform::WinID;
 use crate::types::wire::{self, Response};
@@ -204,7 +204,12 @@ pub(super) fn register_query_commands(app: &mut App) {
 /// set. Both live in one system so only one system holds [`QueryStateParams`]'s
 /// world access. The window set is a separate variant rather than folded into
 /// [`StateQueryKind`] since it projects a different value (the layout tree).
-fn state_query_handler(mut messages: MessageReader<Event>, state: QueryStateParams) {
+fn state_query_handler(
+    mut messages: MessageReader<Event>,
+    state: QueryStateParams,
+    owned: Option<Res<OwnedEngine>>,
+    initializing: Option<Res<Initializing>>,
+) {
     /// Sends an answer without ever waiting for it to be taken. The reply
     /// channel holds one message and exactly one is sent, so this cannot fill;
     /// a client that hung up in the meantime is simply gone.
@@ -213,6 +218,15 @@ fn state_query_handler(mut messages: MessageReader<Event>, state: QueryStatePara
     }
 
     for event in messages.read() {
+        if owned.is_some() && initializing.is_some() {
+            match event {
+                Event::StateQuery { respond_to, .. } | Event::WindowSetQuery { respond_to } => {
+                    reply(respond_to, Err("Emaki-owned engine is initializing".into()));
+                    continue;
+                }
+                _ => {}
+            }
+        }
         match event {
             Event::StateQuery { kind, respond_to } => reply(
                 respond_to,
@@ -456,6 +470,67 @@ mod tests {
     use super::*;
     use crate::ecs::state::{Frame, PaneruVirtualWorkspaceState, PaneruWindowState};
     use crate::events::Event as PaneruEvent;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn owned_query_waits_for_discovery_but_accepts_an_initialized_empty_world() {
+        let mut harness = crate::tests::TestHarness::new();
+        let world = harness.app.world_mut();
+        world.insert_resource(OwnedEngine);
+        let (sender, receiver) = async_channel::bounded(1);
+        world.write_message(Event::StateQuery {
+            kind: crate::types::state::StateQueryKind::State,
+            respond_to: sender,
+        });
+        world.run_system_once(state_query_handler).unwrap();
+        assert!(
+            matches!(receiver.try_recv().unwrap(), Response::Error(message) if message.contains("initializing"))
+        );
+
+        world.remove_resource::<Initializing>();
+        let (sender, receiver) = async_channel::bounded(1);
+        world.write_message(Event::StateQuery {
+            kind: crate::types::state::StateQueryKind::State,
+            respond_to: sender,
+        });
+        world.run_system_once(state_query_handler).unwrap();
+        let Response::Query(wire::QueryPayload::State(state)) = receiver.try_recv().unwrap() else {
+            panic!("initialized owned world must answer its state");
+        };
+        assert!(
+            state
+                .virtual_workspaces
+                .iter()
+                .all(|row| row.windows.is_empty())
+        );
+    }
+
+    #[test]
+    fn ordinary_queries_retain_their_pre_initialization_behavior() {
+        let mut harness = crate::tests::TestHarness::new();
+        let world = harness.app.world_mut();
+        assert!(world.contains_resource::<Initializing>());
+        let (sender, receiver) = async_channel::bounded(1);
+        world.write_message(Event::StateQuery {
+            kind: crate::types::state::StateQueryKind::State,
+            respond_to: sender,
+        });
+        world.run_system_once(state_query_handler).unwrap();
+        assert!(matches!(receiver.try_recv().unwrap(), Response::Query(_)));
+    }
+
+    #[test]
+    fn owned_window_set_queries_also_wait_for_discovery() {
+        let mut harness = crate::tests::TestHarness::new();
+        let world = harness.app.world_mut();
+        world.insert_resource(OwnedEngine);
+        let (sender, receiver) = async_channel::bounded(1);
+        world.write_message(Event::WindowSetQuery { respond_to: sender });
+        world.run_system_once(state_query_handler).unwrap();
+        assert!(
+            matches!(receiver.try_recv().unwrap(), Response::Error(message) if message.contains("initializing"))
+        );
+    }
 
     fn query_state_with_active_window(
         window_id: WinID,

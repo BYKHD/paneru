@@ -264,7 +264,41 @@ fn start_commands(service: &launchctl::Service, bootstrapped: bool) -> Vec<Vec<&
 
 #[cfg(test)]
 mod tests {
-    use super::start_commands;
+    use super::{Service, start_commands};
+
+    #[test]
+    fn owned_service_guard_is_checked_in_a_separate_process() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "platform::service::tests::owned_service_guard_child",
+                "--nocapture",
+            ])
+            .env("EMAKI_OWNED_GUARD_TEST", "1")
+            .env(crate::owned::OWNER_PID_ENV, std::process::id().to_string())
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[test]
+    fn owned_service_guard_child() {
+        if std::env::var_os("EMAKI_OWNED_GUARD_TEST").is_none() {
+            return;
+        }
+        assert_eq!(
+            Service::try_new(super::ID).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            Service::request_restart().unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
 
     fn service() -> launchctl::Service {
         launchctl::Service::builder()

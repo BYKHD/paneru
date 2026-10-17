@@ -503,6 +503,10 @@ pub struct FocusFollowsMouse(pub Option<WinID>);
 #[derive(Resource)]
 pub struct Initializing;
 
+/// Opt-in owned launch; queries must wait for initial discovery to finish.
+#[derive(Resource)]
+pub struct OwnedEngine;
+
 /// Bevy event trigger for spawning new windows.
 #[derive(BevyEvent)]
 pub struct SpawnWindowTrigger(pub Vec<Window>);
@@ -744,6 +748,10 @@ pub fn setup_bevy_app(sender: EventSender, receiver: Receiver<Event>) -> Result<
         .add_plugins(focus::FocusEventsPlugin)
         .add_plugins(display::DisplayEventsPlugin)
         .add_plugins((register_triggers, register_systems, register_commands));
+
+    if crate::owned::enabled() {
+        app.insert_resource(OwnedEngine);
+    }
 
     // Run every schedule inline rather than fanning systems out across the task
     // pool: the task-pool handoff measured ~45% of main-thread time against
