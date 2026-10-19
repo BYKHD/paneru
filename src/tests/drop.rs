@@ -10,7 +10,7 @@ use crate::ecs::Position;
 use crate::ecs::drop::{DropDragged, DropPreviewPlugin};
 use crate::ecs::layout::LayoutStrip;
 use crate::events::Event;
-use crate::manager::Origin;
+use crate::manager::{Origin, Size};
 use crate::platform::Modifiers;
 
 const EXT: IRect = IRect {
@@ -199,5 +199,32 @@ fn transfer_keeps_relative_width_and_closes_the_source_gap() {
     assert!(
         x_of(&mut h, first) >= EXT.min.x,
         "landed on the other display"
+    );
+}
+
+#[test]
+fn the_slot_follows_the_size_the_app_actually_takes() {
+    let mut h = harness();
+    let before = order(&mut h, 0);
+    let x1 = x_of(&mut h, before[1]);
+    let first = before[0];
+    grab(&mut h, first);
+    drag_to(&mut h, first, x1 + 300, 10);
+    let modifiers = Modifiers::empty();
+    send(
+        &mut h,
+        Event::MouseUp {
+            point: at(x1 + 300, 10),
+            modifiers,
+        },
+    );
+    // Still landing: the app settles on another width than it was given.
+    h.mock_state
+        .os_resize_window(first, Size::new(TEST_WINDOW_WIDTH + 100, 748));
+    h.advance(Duration::from_millis(1600));
+    assert_eq!(
+        x_of(&mut h, before[2]),
+        x_of(&mut h, first) + TEST_WINDOW_WIDTH + 100,
+        "the next column moves to fit the real width"
     );
 }

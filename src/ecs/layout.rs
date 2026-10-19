@@ -1186,12 +1186,18 @@ fn layout_strip_changed(
     displays: DisplayViewports,
     config: Res<Config>,
 ) {
-    // Emaki (#33): a dragged window holds a gap of its landing size.
+    // Emaki (#33): a hovering window holds a gap of its landing size.
     let get_window_frame = |entity| {
         windows
             .get(entity)
             .map(|(position, bounds, _)| {
-                let size = dragged.get(entity).map_or(bounds.0, |d| d.landing);
+                // Once released its real size rules: an app may not take the
+                // landing size, or report it late.
+                let size = dragged
+                    .get(entity)
+                    .ok()
+                    .filter(|d| d.hovering)
+                    .map_or(bounds.0, |d| d.landing);
                 IRect::from_corners(position.0, position.0 + size)
             })
             .ok()
