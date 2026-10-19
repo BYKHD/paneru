@@ -1182,13 +1182,18 @@ fn stack_item_has_changed_window(item: &StackItem, changed_entities: &EntityHash
 fn layout_strip_changed(
     changed_strips: Populated<(&LayoutStrip, &ChildOf), Changed<LayoutStrip>>,
     mut windows: WindowFrames,
+    dragged: Query<&crate::ecs::drop::DropDragged>,
     displays: DisplayViewports,
     config: Res<Config>,
 ) {
+    // Emaki (#33): a dragged window holds a gap of its landing size.
     let get_window_frame = |entity| {
         windows
             .get(entity)
-            .map(|(position, bounds, _)| IRect::from_corners(position.0, position.0 + bounds.0))
+            .map(|(position, bounds, _)| {
+                let size = dragged.get(entity).map_or(bounds.0, |d| d.landing);
+                IRect::from_corners(position.0, position.0 + size)
+            })
             .ok()
     };
 
@@ -1211,16 +1216,18 @@ fn layout_strip_changed(
             if layout_position.0 != frame.min {
                 layout_position.0 = frame.min;
             }
-            if bounds.0 != frame.size() {
+            if bounds.0 != frame.size() && !dragged.get(entity).is_ok_and(|d| d.hovering) {
                 bounds.0 = frame.size();
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[instrument(level = Level::DEBUG, skip_all)]
 fn reshuffle_layout_strip(
     markers: Query<(Entity, &LayoutPosition), With<ReshuffleAroundMarker>>,
+    dragged: Query<(), With<crate::ecs::drop::DropDragged>>,
     strips: StripPlacements,
     manual_offsets: Query<&ManualStripOffset>,
     displays: DisplayViewports,
@@ -1231,6 +1238,10 @@ fn reshuffle_layout_strip(
     markers.into_iter().for_each(|(entity, layout_position)| {
         if let Ok(mut cmd) = commands.get_entity(entity) {
             cmd.try_remove::<ReshuffleAroundMarker>();
+        }
+        if dragged.contains(entity) {
+            trace!("reshuffle_layout_strip: {entity} is being dragged or landing");
+            return;
         }
         let Some((strip, strip_entity, active_strip, child, active_marker, strip_reposition)) =
             strips.into_iter().find(|strip| strip.0.contains(entity))
@@ -1598,6 +1609,7 @@ fn insert_stack_item_window_contexts(
 #[instrument(level = Level::DEBUG, skip_all)]
 fn position_layout_windows(
     positioned_windows: RepositionedWindows,
+    dragged: Query<&crate::ecs::drop::DropDragged>,
     workspaces: StripsForWindowPositioning,
     snap_guards: Query<&SnapStripMarker>,
     displays: DisplayViewports,
@@ -1623,6 +1635,9 @@ fn position_layout_windows(
         let Some(context) = strip_contexts.get(&entity) else {
             return;
         };
+        if dragged.get(entity).is_ok_and(|d| d.hovering) {
+            continue;
+        }
         let Ok((display, dock)) = displays.get(context.display_entity) else {
             return;
         };

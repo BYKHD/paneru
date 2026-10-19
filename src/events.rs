@@ -128,6 +128,8 @@ pub enum Event {
         point: CGPoint,
         modifiers: Modifiers,
     },
+    /// Emaki (#33): Esc pressed during a drop preview.
+    DropCancel,
     /// A mouse move event has occurred.
     MouseMoved {
         point: CGPoint,

@@ -375,6 +375,13 @@ impl InputHandler {
             CGEventType::KeyDown => {
                 let keycode =
                     CGEvent::integer_value_field(Some(event), CGEventField::KeyboardEventKeycode);
+                // Emaki (#33): Esc cancels a drop preview and goes no further.
+                if keycode == 53
+                    && crate::ecs::drop::DRAG_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    _ = events.send(Event::DropCancel);
+                    return true;
+                }
                 // handle_keypress can intercept the event, so it may return true.
                 return self.handle_keypress(keycode, flags);
             }

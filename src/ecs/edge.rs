@@ -299,6 +299,7 @@ fn edge_handoffs(
     displays: Query<(Entity, &Display, Option<&DisplayRefresh>)>,
     config: Res<Config>,
     mission_control: Option<Res<crate::ecs::MissionControlActive>>,
+    drop: Option<Res<crate::ecs::drop::DropPreview>>,
     time: Res<Time>,
     mut tracker: ResMut<EdgeTracker>,
     mut outbox: ResMut<EdgeOutbox>,
@@ -338,7 +339,10 @@ fn edge_handoffs(
     if mission_control.is_some_and(|mc| mc.0) {
         tracker.hands_off_until = now + HANDS_OFF_GRACE;
     }
-    let hands_off = tracker.button_down || now < tracker.hands_off_until;
+    // Emaki (#33): during a drop preview only the dragged window is the user's;
+    // neighbours sliding aside still hand off, and no rest snap moves the strip.
+    let dragged = drop.and_then(|d| d.dragged());
+    let hands_off_all = dragged.is_none() && (tracker.button_down || now < tracker.hands_off_until);
     let snap_on = config.snap_at_display_edge();
     let mut busy = false;
     let mut seen = Vec::new();
@@ -475,6 +479,7 @@ fn edge_handoffs(
                 });
                 let vel = handoff.prev_overflow.map_or(0.0, |p| spill - p);
                 handoff.prev_overflow = Some(spill);
+                let hands_off = hands_off_all || dragged == Some(entity);
                 let resizing =
                     hands_off || live.is_some_and(|l| now.saturating_sub(l.0) < LIVE_RESIZE);
                 if live.is_some()
@@ -591,7 +596,8 @@ fn edge_handoffs(
 
                 // A column resting past its limit with part of it showing.
                 if snap_on
-                    && !hands_off
+                    && !hands_off_all
+                    && dragged.is_none()
                     && !foreign
                     && resting
                     && !scrolling
