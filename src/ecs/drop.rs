@@ -8,6 +8,13 @@
 //! with the button held puts the gap back at the window's original slot.
 //! Release commits the tentative slot and animates the window into it.
 //!
+//! On a display with a shared edge the strip keeps the shared-edge side still
+//! while the gap moves: the gap opens and closes toward the outer edge, so no
+//! window crosses the shared edge and no handoff runs during a drag (owner,
+//! after handoffs wobbled neighbours out of the corner). Two exceptions at the
+//! strip's outer end: a gap there shifts the strip just enough to stay on
+//! screen, and a strip the window left settles on release.
+//!
 //! The tentative slot lives in the real `LayoutStrip`, so a crash or Stop mid
 //! drag leaves it there; release or cancel are the only commits the owner sees.
 
@@ -29,6 +36,7 @@ use objc2_core_foundation::CGPoint;
 use tracing::debug;
 
 use crate::config::Config;
+use crate::ecs::edge::shared_edge;
 use crate::ecs::layout::{Column, LayoutStrip, origin_exposing};
 use crate::ecs::{
     Bounds, DockPosition, LayoutPosition, MouseHeldMarker, Position, RepositionMarker,
@@ -36,6 +44,7 @@ use crate::ecs::{
 };
 use crate::events::Event;
 use crate::manager::{Display, Size, Window, WindowManager};
+use crate::types::state::EdgeSide;
 use crate::util::round_px;
 
 /// Set while a drop preview is live, so the event tap can claim Esc.
@@ -91,6 +100,8 @@ struct Session {
     /// Width over the home display's usable width (the transfer rule).
     ratio: f64,
     at: (Entity, usize),
+    /// The gap's current size.
+    landing: Size,
     cancelled: bool,
 }
 
@@ -101,9 +112,9 @@ pub(crate) struct DropPreview {
 }
 
 impl DropPreview {
-    /// The animation rate for neighbours while a preview is live.
+    /// The animation rate while a preview is live and while the window lands.
     pub(crate) fn gap_rate(&self) -> Option<f64> {
-        matches!(self.state, State::Dragging(_)).then_some(self.gap_rate)
+        matches!(self.state, State::Dragging(_) | State::Landing { .. }).then_some(self.gap_rate)
     }
 
     /// The dragged window while a preview is live: handoffs leave only it alone.
@@ -131,9 +142,10 @@ type Strips<'w, 's> = Query<
     (
         Entity,
         &'static mut LayoutStrip,
-        &'static Position,
+        &'static mut Position,
         &'static ChildOf,
         Has<SelectedVirtualMarker>,
+        Option<&'static mut RepositionMarker>,
     ),
     Without<Window>,
 >;
@@ -250,7 +262,7 @@ fn drop_preview(
                     continue;
                 }
                 let Some((strip_entity, index, display)) =
-                    strips.iter().find_map(|(se, strip, _, child, _)| {
+                    strips.iter().find_map(|(se, strip, _, child, ..)| {
                         strip
                             .index_of(entity)
                             .ok()
@@ -287,6 +299,7 @@ fn drop_preview(
                     home_size: frame.size(),
                     ratio,
                     at: (strip_entity, index),
+                    landing: frame.size(),
                     cancelled: false,
                 });
             }
@@ -301,7 +314,16 @@ fn drop_preview(
                 let entity = session.entity;
                 if session.at != home {
                     session.at = home;
-                    move_to(&mut strips, entity, home);
+                    let edges = strip_edges(&strips, &displays, &config);
+                    move_to(
+                        &mut strips,
+                        &windows,
+                        &edges,
+                        entity,
+                        (session.landing, landing),
+                        home,
+                    );
+                    session.landing = landing;
                 }
                 if let Ok(mut cmd) = commands.get_entity(entity) {
                     cmd.try_insert(DropDragged {
@@ -325,7 +347,7 @@ fn drop_preview(
                     continue;
                 };
                 let Some((target, strip_x)) =
-                    strips.iter().find_map(|(se, strip, pos, child, sel)| {
+                    strips.iter().find_map(|(se, strip, pos, child, sel, _)| {
                         (child.parent() == display && sel && strip.id() == space)
                             .then_some((se, pos.0.x))
                     })
@@ -377,7 +399,16 @@ fn drop_preview(
                     landing.x, landing.y
                 );
                 session.at = (target, index);
-                move_to(&mut strips, entity, (target, index));
+                let edges = strip_edges(&strips, &displays, &config);
+                move_to(
+                    &mut strips,
+                    &windows,
+                    &edges,
+                    entity,
+                    (session.landing, landing),
+                    (target, index),
+                );
+                session.landing = landing;
                 if let Ok(mut cmd) = commands.get_entity(entity) {
                     cmd.try_insert(DropDragged {
                         landing,
@@ -412,7 +443,7 @@ fn drop_preview(
                     }
                     layout.set_changed();
                 }
-                if let Ok((_, mut strip, strip_pos, child, _)) = strips.get_mut(target) {
+                if let Ok((_, mut strip, strip_pos, child, ..)) = strips.get_mut(target) {
                     strip.set_changed();
                     // Scroll just enough to show the landing slot.
                     let left = strip
@@ -439,6 +470,31 @@ fn drop_preview(
                         }
                     }
                 }
+                // The strip the window left may have an empty outer end now.
+                let home = session.home.0;
+                if home != target
+                    && let Ok((_, strip, position, child, ..)) = strips.get(home)
+                    && let Some(view) = viewport(child.parent())
+                {
+                    let total = strip
+                        .column_positions(&frames(&windows, entity, landing))
+                        .map(|(column, left)| {
+                            left + column
+                                .width(&frames(&windows, entity, landing))
+                                .unwrap_or(0)
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    let x = if total > view.width() {
+                        position.0.x.clamp(view.max.x - total, view.min.x)
+                    } else {
+                        view.min.x
+                    };
+                    if x != position.0.x {
+                        debug!("drop: settle strip {home} {} -> {x}", position.0.x);
+                        commands.reposition_entity(home, position.0.with_x(x));
+                    }
+                }
                 if let Ok(mut cmd) = commands.get_entity(entity) {
                     cmd.try_insert(DropDragged {
                         landing,
@@ -457,8 +513,87 @@ fn column_has(column: &Column, entity: Entity) -> bool {
     matches!(column, Column::Single(e) if *e == entity)
 }
 
-/// Moves `entity` out of whichever strip holds it into `to` at `index`.
-fn move_to(strips: &mut Strips, entity: Entity, (to, index): (Entity, usize)) {
+/// Frames as the layout sizes columns, with the dragged window at `landing`.
+fn frames<'a>(
+    windows: &'a DragWindows,
+    entity: Entity,
+    landing: Size,
+) -> impl Fn(Entity) -> Option<IRect> + 'a {
+    move |e| {
+        if e == entity {
+            return Some(IRect::from_corners(bevy::math::IVec2::ZERO, landing));
+        }
+        windows
+            .get(e)
+            .ok()
+            .map(|w| IRect::from_corners(w.1.0, w.1.0 + w.2.0))
+    }
+}
+
+/// Each strip on a display with a shared edge: that edge's side and the viewport.
+fn strip_edges(
+    strips: &Strips,
+    displays: &Query<(Entity, &Display, Option<&DockPosition>)>,
+    config: &Config,
+) -> Vec<(Entity, EdgeSide, IRect)> {
+    strips
+        .iter()
+        .filter_map(|(se, _, _, child, ..)| {
+            let (_, display, dock) = displays.get(child.parent()).ok()?;
+            let (side, _) = shared_edge(
+                display.bounds(),
+                displays.iter().map(|(_, d, _)| d.bounds()),
+            )?;
+            Some((se, side, display.actual_display_bounds(dock, config)))
+        })
+        .collect()
+}
+
+/// Layout x of the column whose top window is `top`.
+fn column_x<W: Fn(Entity) -> Option<IRect>>(
+    strip: &LayoutStrip,
+    top: Entity,
+    frames: &W,
+) -> Option<i32> {
+    strip
+        .column_positions(frames)
+        .find_map(|(column, left)| (column.top() == Some(top)).then_some(left))
+}
+
+/// Moves `entity` out of whichever strip holds it into `to` at `index`, the gap
+/// going from `old` to `new` size. Strips at a shared edge keep the column
+/// nearest it in place on screen.
+fn move_to(
+    strips: &mut Strips,
+    windows: &DragWindows,
+    edges: &[(Entity, EdgeSide, IRect)],
+    entity: Entity,
+    (old, new): (Size, Size),
+    (to, index): (Entity, usize),
+) {
+    let before = frames(windows, entity, old);
+    let after = frames(windows, entity, new);
+    // The anchor, nearest the shared edge, and its layout x before the move.
+    let anchors = edges
+        .iter()
+        .filter_map(|&(se, side, view)| {
+            let (_, strip, ..) = strips.get(se).ok()?;
+            if se != to && !strip.contains(entity) {
+                return None;
+            }
+            let mut tops = strip
+                .columns()
+                .filter(|column| !column_has(column, entity))
+                .filter_map(Column::top);
+            let anchor = match side {
+                EdgeSide::Right => tops.last(),
+                EdgeSide::Left => tops.next(),
+            };
+            let x = anchor.and_then(|a| column_x(strip, a, &before));
+            Some((se, side, view, anchor.zip(x)))
+        })
+        .collect::<Vec<_>>();
+
     for (strip_entity, mut strip, ..) in strips.iter_mut() {
         if strip_entity != to && strip.contains(entity) {
             strip.remove(entity);
@@ -467,5 +602,33 @@ fn move_to(strips: &mut Strips, entity: Entity, (to, index): (Entity, usize)) {
     if let Ok((_, mut strip, ..)) = strips.get_mut(to) {
         strip.remove(entity);
         strip.insert_at(index, entity);
+    }
+
+    for (se, side, view, anchor) in anchors {
+        let Ok((_, strip, mut position, _, _, marker)) = strips.get_mut(se) else {
+            continue;
+        };
+        let mut x = position.0.x;
+        if let Some((top, was)) = anchor
+            && let Some(now) = column_x(&strip, top, &after)
+        {
+            x += was - now;
+        }
+        // A gap at the strip's outer end stays on screen.
+        if let Some(left) = column_x(&strip, entity, &after) {
+            match side {
+                EdgeSide::Right if x + left < view.min.x => x = view.min.x - left,
+                EdgeSide::Left if x + left + new.x > view.max.x => x = view.max.x - left - new.x,
+                _ => {}
+            }
+        }
+        let dx = x - position.0.x;
+        if dx != 0 {
+            debug!("drop: anchor strip {se} dx {dx}");
+            position.0.x = x;
+            if let Some(mut marker) = marker {
+                marker.0.x += dx;
+            }
+        }
     }
 }

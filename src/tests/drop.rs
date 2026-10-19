@@ -176,11 +176,14 @@ fn transfer_keeps_relative_width_and_closes_the_source_gap() {
     let before = order(&mut h, 0);
     let first = before[0];
     let x0 = x_of(&mut h, first);
+    let x1 = x_of(&mut h, before[1]);
     grab(&mut h, first);
     drag_to(&mut h, first, EXT.min.x + 300, 500);
     let source = order(&mut h, before[1]);
     assert_eq!(source, vec![before[1], before[2]], "one gap at a time");
-    assert_eq!(x_of(&mut h, before[1]), x0, "source closed up");
+    // The source's shared edge is on its right: nothing slides toward it or
+    // away from it while hovering; the outer end stays open until release.
+    assert_eq!(x_of(&mut h, before[1]), x1, "shared side held still");
     assert_eq!(
         order(&mut h, first),
         vec![first],
@@ -200,6 +203,40 @@ fn transfer_keeps_relative_width_and_closes_the_source_gap() {
         x_of(&mut h, first) >= EXT.min.x,
         "landed on the other display"
     );
+    assert_eq!(x_of(&mut h, before[1]), x0, "the source settled on release");
+}
+
+/// A strip running past the shared edge: taking a column out of its middle
+/// pulls nothing back across that edge; the outer side closes the gap.
+#[test]
+fn the_shared_edge_side_holds_still_during_a_drag() {
+    let mut h = TestHarness::new()
+        .with_display(EXT_DISPLAY_ID, EXT, vec![EXT_WORKSPACE_ID])
+        .with_windows(4);
+    h.app.add_plugins(DropPreviewPlugin);
+    h.run(vec![Event::Command {
+        command: Command::PrintState,
+    }]);
+    let before = order(&mut h, 0);
+    let xs = before
+        .iter()
+        .map(|id| x_of(&mut h, *id))
+        .collect::<Vec<_>>();
+    assert!(
+        xs[3] + TEST_WINDOW_WIDTH > TEST_DISPLAY_WIDTH,
+        "the last column reaches past the shared edge: {xs:?}"
+    );
+    let middle = before[1];
+    grab(&mut h, middle);
+    drag_to(&mut h, middle, EXT.min.x + 300, 500);
+    assert_eq!(x_of(&mut h, before[2]), xs[2], "near the edge: still");
+    assert_eq!(x_of(&mut h, before[3]), xs[3], "past the edge: still");
+    assert_eq!(x_of(&mut h, before[0]), xs[1], "outer side closed the gap");
+
+    // And back: the gap reopens on the outer side.
+    drag_to(&mut h, middle, xs[2] - 50, 300);
+    assert_eq!(x_of(&mut h, before[2]), xs[2]);
+    assert_eq!(x_of(&mut h, before[3]), xs[3]);
 }
 
 #[test]
