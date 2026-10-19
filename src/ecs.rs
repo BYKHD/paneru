@@ -41,6 +41,7 @@ use crate::overlay::{FlashMessageManager, OverlayManager};
 use crate::platform::{Modifiers, PlatformCallbacks, WinID, WorkspaceId};
 
 pub mod display;
+pub(crate) mod edge;
 pub mod focus;
 pub mod layout;
 #[cfg(feature = "lua")]
@@ -692,6 +693,7 @@ fn autorelease_runner(mut app: BevyApp) -> bevy::app::AppExit {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn setup_bevy_app(sender: EventSender, receiver: Receiver<Event>) -> Result<BevyApp> {
     crate::manager::app::bound_ax_messaging_timeout()?;
 
@@ -761,6 +763,7 @@ pub fn setup_bevy_app(sender: EventSender, receiver: Receiver<Event>) -> Result<
         .add_plugins(layout::LayoutEventsPlugin)
         .add_plugins(focus::FocusEventsPlugin)
         .add_plugins(display::DisplayEventsPlugin)
+        .add_plugins(edge::EdgePlugin)
         .add_plugins((register_triggers, register_systems, register_commands));
 
     if crate::owned::enabled() {

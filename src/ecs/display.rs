@@ -529,6 +529,15 @@ fn read_display_properties_trigger(
         }
     }
 
+    let refresh = read_screen_property(&screens, display_id, |screen| {
+        screen.maximumFramesPerSecond()
+    });
+    if let Some(hz) = refresh.and_then(|hz| u32::try_from(hz).ok())
+        && let Ok(mut entity_commands) = commands.get_entity(entity)
+    {
+        entity_commands.try_insert(crate::ecs::edge::DisplayRefresh(hz));
+    }
+
     if let Some(config) = config {
         let height = config.menubar_height();
         display.set_menubar_height_override(height);

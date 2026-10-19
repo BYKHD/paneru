@@ -123,6 +123,26 @@ pub(crate) fn clamp_origin_to_viewport(origin: Origin, size: Size, viewport: IRe
     origin.clamp(minimum, maximum)
 }
 
+/// As [`clamp_origin_to_viewport`], but a window wider than the viewport is
+/// aligned to the shared edge so its overhang falls past the outer edge.
+fn clamp_shared_origin(
+    origin: Origin,
+    size: Size,
+    viewport: IRect,
+    displays: impl Iterator<Item = IRect>,
+    owner: IRect,
+) -> Origin {
+    let mut result = clamp_origin_to_viewport(origin, size, viewport);
+    if size.x > viewport.width() {
+        match crate::ecs::edge::shared_edge(owner, displays).map(|(side, _)| side) {
+            Some(crate::types::state::EdgeSide::Right) => result.x = viewport.max.x - size.x,
+            Some(crate::types::state::EdgeSide::Left) => result.x = viewport.min.x,
+            None => (),
+        }
+    }
+    result
+}
+
 /// How far a stored width may drift before a [`ManualStripOffset`] counts as
 /// stale. `window_resized_update_frame` writes back the OS geometry, which can
 /// land a pixel or two off the size the layout asked for.
@@ -1247,7 +1267,13 @@ fn reshuffle_layout_strip(
             let strip_target = strip_reposition.map_or(active_strip.0, |reposition| reposition.0);
             let projected = layout_position.0 + strip_target;
             if signature_matches(&current, &manual.signature)
-                && clamp_origin_to_viewport(projected, size, display_bounds) == projected
+                && clamp_shared_origin(
+                    projected,
+                    size,
+                    display_bounds,
+                    displays.iter().map(|(d, _)| d.bounds()),
+                    active_display.bounds(),
+                ) == projected
             {
                 trace!("reshuffle_layout_strip: keeping manual offset on {strip_entity}");
                 return;
@@ -1259,7 +1285,13 @@ fn reshuffle_layout_strip(
         }
 
         // Expose the window by clamping it into the viewport.
-        frame.min = clamp_origin_to_viewport(frame.min, size, display_bounds);
+        frame.min = clamp_shared_origin(
+            frame.min,
+            size,
+            display_bounds,
+            displays.iter().map(|(d, _)| d.bounds()),
+            active_display.bounds(),
+        );
         frame.max = frame.min + size;
 
         let mut strip_position = (frame.min - layout_position.0).with_y(display_bounds.min.y);
@@ -1381,7 +1413,13 @@ fn ensure_visible_in_strip(
         let candidate_min = layout_position.0 + strip_target;
         // Clamp into the viewport. If already on-screen, this is a no-op and
         // the strip target equals its current position — no movement.
-        let clamped_min = clamp_origin_to_viewport(candidate_min, size, viewport);
+        let clamped_min = clamp_shared_origin(
+            candidate_min,
+            size,
+            viewport,
+            displays.iter().map(|(d, _)| d.bounds()),
+            display.bounds(),
+        );
         if clamped_min == candidate_min {
             continue;
         }
@@ -1589,6 +1627,13 @@ fn position_layout_windows(
             return;
         };
         let viewport = display.actual_display_bounds(dock, &config);
+        // Emaki: no upstream sliver at the shared edge; past it the window
+        // keeps its slot and `edge` parks it in the outer corner instead.
+        let shared = crate::ecs::edge::shared_edge(
+            display.bounds(),
+            displays.iter().map(|(d, _)| d.bounds()),
+        )
+        .map(|(side, _)| side);
         // Gets 80% of the display height as threshold.
         let Ok(vertical_move_threshold) = u32::try_from(viewport.height() * 8 / 10) else {
             continue;
@@ -1604,7 +1649,13 @@ fn position_layout_windows(
         frame.max += context.strip_position;
 
         let mut offscreen = false;
-        if frame.max.x <= viewport.min.x + h_pad {
+        if frame.max.x <= viewport.min.x + h_pad
+            && shared == Some(crate::types::state::EdgeSide::Left)
+            || frame.min.x >= viewport.max.x - h_pad
+                && shared == Some(crate::types::state::EdgeSide::Right)
+        {
+            // Past the shared edge: the slot as is.
+        } else if frame.max.x <= viewport.min.x + h_pad {
             // Window hidden to the left — position so exactly
             // sliver_width CG pixels are visible from the real
             // display edge.  The +h_pad accounts for the gap that

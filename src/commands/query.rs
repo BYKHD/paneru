@@ -198,6 +198,7 @@ pub(super) fn register_query_commands(app: &mut App) {
         PostUpdate,
         state_event_broadcast_handler.run_if(active_subscribers),
     );
+    app.add_systems(PostUpdate, edge_broadcast_handler);
 }
 
 /// Answers socket queries that read the world: state documents and the window
@@ -460,6 +461,33 @@ fn state_event_broadcast_handler(
                 // Alive but not keeping up. The event is lost; the subscriber
                 // is kept.
                 Err(err) => warn!("pushing broadcast event: {err}"),
+            }
+        }
+    }
+}
+
+/// Pushes shared-edge frames (see `crate::ecs::edge`), dropping them when
+/// nobody listens.
+fn edge_broadcast_handler(
+    outbox: Option<ResMut<crate::ecs::edge::EdgeOutbox>>,
+    mut subscribers: ResMut<StateSubscribers>,
+) {
+    let Some(mut outbox) = outbox.filter(|outbox| !outbox.0.is_empty()) else {
+        return;
+    };
+    let events = std::mem::take(&mut outbox.0);
+    subscribers
+        .streams
+        .retain(|subscriber| subscriber.alive.load(Ordering::Relaxed));
+    for subscriber in &subscribers.streams {
+        for edge in &events {
+            match subscriber.channel.try_send(&StateEvent::Edge(edge.clone())) {
+                Ok(()) => {}
+                Err(wire::Error::PeerGone) => {
+                    subscriber.alive.store(false, Ordering::Relaxed);
+                    break;
+                }
+                Err(err) => warn!("pushing edge event: {err}"),
             }
         }
     }

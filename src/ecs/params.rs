@@ -205,6 +205,7 @@ pub struct FrameActivity<'w, 's> {
     resizing: Query<'w, 's, (), With<ResizeMarker>>,
     scrolling: Query<'w, 's, (), With<Scrolling>>,
     flash_messages: Query<'w, 's, (), With<FlashMessage>>,
+    edge: Option<bevy::ecs::system::Res<'w, crate::ecs::edge::EdgeWake>>,
 }
 
 impl FrameActivity<'_, '_> {
@@ -215,6 +216,7 @@ impl FrameActivity<'_, '_> {
             || !self.resizing.is_empty()
             || !self.scrolling.is_empty()
             || !self.flash_messages.is_empty()
+            || self.edge.as_ref().is_some_and(|edge| edge.0)
     }
 }
 

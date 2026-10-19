@@ -63,12 +63,21 @@ type MovableWindows<'w, 's> = Query<
         Option<&'static Unmanaged>,
         Has<RepositionMarker>,
     ),
-    Without<LayoutStrip>,
+    (Without<LayoutStrip>, Without<super::edge::EdgeParked>),
 >;
 
 /// Windows as the resize handler rewrites them: the OS handle to re-read the
 /// frame from, the size to overwrite, and whether the window is ours to lay
 /// out at all.
+/// Windows whose `Position` changed, except those `edge` parked: their AX
+/// origin is the parking corner until they return.
+type CommittedWindows<'w, 's> = Populated<
+    'w,
+    's,
+    (&'static mut Window, &'static Position),
+    (Changed<Position>, Without<super::edge::EdgeParked>),
+>;
+
 type ResizableWindows<'w, 's> = Query<
     'w,
     's,
@@ -80,7 +89,7 @@ type ResizableWindows<'w, 's> = Query<
         Option<&'static Unmanaged>,
         Has<ResizeMarker>,
     ),
-    Without<LayoutStrip>,
+    (Without<LayoutStrip>, Without<super::edge::EdgeParked>),
 >;
 
 const ANIAMTE_SNAP_THRESHOLD: f32 = 5.0;
@@ -1104,9 +1113,7 @@ pub(super) fn update_overlays(
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
-pub(super) fn commit_window_position(
-    mut moved_windows: Populated<(&mut Window, &Position), Changed<Position>>,
-) {
+pub(super) fn commit_window_position(mut moved_windows: CommittedWindows) {
     // `par_iter_mut` runs on `ComputeTaskPool` worker threads, which have no
     // `CFRunLoop` of their own to drain thread-local autorelease pools.
     moved_windows
@@ -1118,7 +1125,10 @@ pub(super) fn commit_window_position(
 
 #[instrument(level = Level::TRACE, skip_all)]
 pub(super) fn verify_window_position(
-    mut windows: Populated<(Entity, &mut Window, &Position, &mut VerifyWindowPosition)>,
+    mut windows: Populated<
+        (Entity, &mut Window, &Position, &mut VerifyWindowPosition),
+        Without<super::edge::EdgeParked>,
+    >,
     mut commands: Commands,
 ) {
     for (entity, mut window, position, mut verification) in &mut windows {
