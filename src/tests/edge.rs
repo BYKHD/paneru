@@ -201,3 +201,35 @@ fn snap_off_leaves_a_column_resting_past_its_limit() {
     assert!((overflow(probe.slot(&mut harness)) - 0.72).abs() < 0.01);
     assert!(probe.parked(&mut harness));
 }
+
+fn mouse(harness: &mut TestHarness, down: bool) {
+    let point = objc2_core_foundation::CGPoint::new(5000.0, 5000.0);
+    let modifiers = crate::platform::Modifiers::empty();
+    harness.world().write_message(if down {
+        Event::MouseDown { point, modifiers }
+    } else {
+        Event::MouseUp { point, modifiers }
+    });
+}
+
+#[test]
+fn a_drag_takes_a_window_across_and_it_is_left_there() {
+    let mut harness = harness();
+    let probe = Probe::new(&mut harness, 1);
+    mouse(&mut harness, true);
+    // While the button is held the window goes well past the change, real.
+    for _ in 0..60 {
+        probe.shift(&mut harness, 10);
+    }
+    let slot = probe.slot(&mut harness);
+    assert!(overflow(slot) > 0.9, "{}", overflow(slot));
+    assert!(!probe.parked(&mut harness));
+    mouse(&mut harness, false);
+    harness.advance(std::time::Duration::from_millis(1500));
+    assert!(!probe.parked(&mut harness), "{}", probe.phase(&mut harness));
+    // Back inside, it is the strip's again and hands off normally.
+    let back = -(probe.slot(&mut harness).max.x - TEST_DISPLAY_WIDTH + 50);
+    probe.shift(&mut harness, back);
+    harness.advance(std::time::Duration::from_millis(300));
+    scroll_out(&mut harness, &probe, 8, false);
+}

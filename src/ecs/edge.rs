@@ -61,6 +61,8 @@ const CROSS_MARGIN: f64 = 0.01;
 const RETURN_CAP: Duration = Duration::from_millis(400);
 /// User resizes this recent suspend handoffs.
 const LIVE_RESIZE: Duration = Duration::from_millis(300);
+/// After a drag, resize or Mission Control ends, handoffs wait this long.
+const HANDS_OFF_GRACE: Duration = Duration::from_millis(500);
 /// The remnant macOS keeps of a window parked in a bottom outer corner (#9).
 const REMNANT: (i32, i32) = (40, 32);
 
@@ -138,6 +140,12 @@ struct DisplayMotion {
 
 #[derive(Default, Resource)]
 struct EdgeTracker {
+    /// Mouse button held (a drag or resize may be under way), or Mission
+    /// Control open: windows move by the user's hand, never by handoffs.
+    button_down: bool,
+    hands_off_until: Duration,
+    /// Real windows the user put past the edge: left alone, not parked back.
+    foreign: std::collections::HashSet<Entity>,
     windows: HashMap<Entity, Handoff>,
     displays: HashMap<Entity, DisplayMotion>,
 }
@@ -290,6 +298,7 @@ fn edge_handoffs(
     mut strips: EdgeStrips,
     displays: Query<(Entity, &Display, Option<&DisplayRefresh>)>,
     config: Res<Config>,
+    mission_control: Option<Res<crate::ecs::MissionControlActive>>,
     time: Res<Time>,
     mut tracker: ResMut<EdgeTracker>,
     mut outbox: ResMut<EdgeOutbox>,
@@ -299,6 +308,14 @@ fn edge_handoffs(
     let now = time.elapsed();
     let mut replies: HashMap<i32, EdgeCommand> = HashMap::new();
     for event in messages.read() {
+        match event {
+            Event::MouseDown { .. } => tracker.button_down = true,
+            Event::MouseUp { .. } => {
+                tracker.button_down = false;
+                tracker.hands_off_until = now + HANDS_OFF_GRACE;
+            }
+            _ => {}
+        }
         if let Event::Command {
             command: Command::Edge(reply),
         } = event
@@ -318,6 +335,10 @@ fn edge_handoffs(
         .iter()
         .map(|(_, display, _)| display.bounds())
         .collect::<Vec<_>>();
+    if mission_control.is_some_and(|mc| mc.0) {
+        tracker.hands_off_until = now + HANDS_OFF_GRACE;
+    }
+    let hands_off = tracker.button_down || now < tracker.hands_off_until;
     let snap_on = config.snap_at_display_edge();
     let mut busy = false;
     let mut seen = Vec::new();
@@ -454,7 +475,8 @@ fn edge_handoffs(
                 });
                 let vel = handoff.prev_overflow.map_or(0.0, |p| spill - p);
                 handoff.prev_overflow = Some(spill);
-                let resizing = live.is_some_and(|l| now.saturating_sub(l.0) < LIVE_RESIZE);
+                let resizing =
+                    hands_off || live.is_some_and(|l| now.saturating_sub(l.0) < LIVE_RESIZE);
                 if live.is_some()
                     && !resizing
                     && let Ok(mut cmd) = commands.get_entity(entity)
@@ -488,7 +510,20 @@ fn edge_handoffs(
                     handoff.since = now;
                 };
 
+                // Hands off: the user moves windows; nothing parks, returns or
+                // is guarded, so a drag can take a window to the other display.
+                // A real window left past its switch point afterwards is the
+                // user's, until it is back inside.
+                if hands_off {
+                    if handoff.phase == Phase::Real && spill > lim.enter_at {
+                        tracker.foreign.insert(entity);
+                    }
+                } else if spill <= 0.0 {
+                    tracker.foreign.remove(&entity);
+                }
+                let foreign = tracker.foreign.contains(&entity);
                 match handoff.phase {
+                    _ if hands_off || foreign => {}
                     Phase::Real => {
                         if spill >= lim.cross {
                             park(&mut window, handoff, "never-cross");
@@ -556,6 +591,8 @@ fn edge_handoffs(
 
                 // A column resting past its limit with part of it showing.
                 if snap_on
+                    && !hands_off
+                    && !foreign
                     && resting
                     && !scrolling
                     && motion.snap.is_none()
@@ -639,6 +676,7 @@ fn edge_handoffs(
     }
 
     tracker.windows.retain(|entity, _| seen.contains(entity));
+    tracker.foreign.retain(|entity| seen.contains(entity));
     wake.0 = busy;
 }
 
