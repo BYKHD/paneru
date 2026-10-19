@@ -805,6 +805,10 @@ impl Config {
         self.options().window_resize_cycle.unwrap_or(true)
     }
 
+    pub fn snap_at_display_edge(&self) -> bool {
+        self.options().snap_at_display_edge.unwrap_or(true)
+    }
+
     pub fn auto_center(&self) -> bool {
         self.options().auto_center.is_some_and(|center| center)
     }
@@ -1222,6 +1226,9 @@ pub struct MainOptions {
     pub animation_speed: Option<f64>,
     /// Automatically center the window when switching focus with keyboard.
     pub auto_center: Option<bool>,
+    /// Emaki: at rest, settle a column resting past its limit at the shared
+    /// edge to the limit or fully into the edge. Default: true.
+    pub snap_at_display_edge: Option<bool>,
     /// Height of off-screen window slivers as a ratio (0.0–1.0) of the display height.
     /// Lower values hide the window's corner radius at screen edges.
     /// Default: 1.0 (full height).

@@ -5,7 +5,7 @@
 //! together here and are checked against each other by round-trip tests.
 
 use crate::types::commands::{
-    Command, Direction, MouseMove, MoveFocus, Operation, ResizeDirection,
+    Command, Direction, EdgeCommand, MouseMove, MoveFocus, Operation, ResizeDirection,
     parse_virtual_workspace_number,
 };
 
@@ -48,7 +48,23 @@ pub fn parse_command(argv: &[&str]) -> Result<Command> {
         "mouse" => Command::Mouse(parse_mouse_move(&argv[1..])?),
         "quit" => Command::Quit,
         "restart" => Command::Restart,
+        "edge" => Command::Edge(parse_edge(&argv[1..])?),
         _ => return Err(ParseError::new(format!("unhandled command '{argv:?}'"))),
+    })
+}
+
+/// Parses a shared-edge reply (e.g. `["covered", "1234"]`).
+fn parse_edge(argv: &[&str]) -> Result<EdgeCommand> {
+    let err = || ParseError::invalid(argv);
+    let id = argv
+        .get(1)
+        .and_then(|id| id.parse::<i32>().ok())
+        .ok_or_else(err)?;
+    Ok(match argv.first().copied() {
+        Some("covered") => EdgeCommand::Covered(id),
+        Some("ready") => EdgeCommand::Ready(id),
+        Some("focus") => EdgeCommand::Focus(id),
+        _ => return Err(err()),
     })
 }
 
@@ -168,6 +184,14 @@ impl Command {
             Command::Quit => vec!["quit".to_string()],
             Command::Restart => vec!["restart".to_string()],
             Command::PrintState => vec!["printstate".to_string()],
+            Command::Edge(edge) => {
+                let (verb, id) = match edge {
+                    EdgeCommand::Covered(id) => ("covered", id),
+                    EdgeCommand::Ready(id) => ("ready", id),
+                    EdgeCommand::Focus(id) => ("focus", id),
+                };
+                vec!["edge".to_string(), verb.to_string(), id.to_string()]
+            }
             Command::Lua(_) | Command::Layout(_) => return None,
         };
         Some(argv)

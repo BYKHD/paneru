@@ -237,6 +237,68 @@ pub enum StateEvent {
     /// Display configuration changed. `display_id` is `null` for a global
     /// change Paneru cannot pin to one display.
     DisplayChanged { display_id: Option<u32> },
+    /// Shared-edge state of one display, sent each engine frame while its
+    /// strip moves or a column is under glass, and once when it goes idle.
+    Edge(EdgeState),
+}
+
+/// Which side of its display the shared edge is on.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeSide {
+    Left,
+    Right,
+}
+
+/// A column's place in a shared-edge handoff.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeHandoff {
+    /// The real window, possibly crossing the edge short of its limits.
+    Real,
+    /// Past the switch point: cover it, then reply `covered`.
+    Approaching,
+    /// Parked in the owning display's bottom outer corner.
+    Parked,
+    /// About to return: blur in, then reply `ready`.
+    Returning,
+}
+
+/// One column near the shared edge. `frame` is its slot in the strip, in
+/// global coordinates, also while parked.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EdgeColumn {
+    pub window_id: i32,
+    pub frame: Frame,
+    pub handoff: EdgeHandoff,
+    /// Fraction of the width past the shared edge.
+    pub overflow: f64,
+    /// Overflow at which the column approaches, and at which it parks anyway.
+    pub enter_at: f64,
+    pub cap_at: f64,
+    /// Overflow at which it returns while parked, and the most it may rest at.
+    pub exit_at: f64,
+    pub rest_limit: f64,
+}
+
+/// The shared edge of one display.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EdgeState {
+    pub display_id: u32,
+    pub side: EdgeSide,
+    /// The edge's x and the display's y range, in global coordinates.
+    pub edge_x: i32,
+    pub top: i32,
+    pub bottom: i32,
+    pub refresh_hz: u32,
+    /// The strip's horizontal offset, for its speed.
+    pub strip_x: i32,
+    pub moving: bool,
+    /// Still for the rest time, with no input.
+    pub resting: bool,
+    pub columns: Vec<EdgeColumn>,
+    /// Seconds on the `CACurrentMediaTime` clock when this frame was committed.
+    pub time: f64,
 }
 
 impl StateEvent {

@@ -292,6 +292,18 @@ pub enum MouseMove {
     ToNextDisplay,
 }
 
+/// Emaki's replies in a shared-edge handoff, and a click on a stand-in.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeCommand {
+    /// The stand-in glass covers this window: the engine may park it.
+    Covered(i32),
+    /// The blur beneath the stand-in is in: the engine may restore it.
+    Ready(i32),
+    /// The stand-in was clicked: focus its window (`LayoutOp::Focus`).
+    Focus(i32),
+}
+
 /// Represents a command that can be issued to the window manager.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -312,4 +324,6 @@ pub enum Command {
     /// Window-addressed, unlike every other command here, and applied
     /// best-effort: see `ecs::layout_ops`. Never produced by parsing.
     Layout(Vec<crate::types::windowset::LayoutOp>),
+    /// Shared-edge handoff replies from Emaki.
+    Edge(EdgeCommand),
 }
