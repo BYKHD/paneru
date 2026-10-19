@@ -701,10 +701,17 @@ pub fn setup_bevy_app(sender: EventSender, receiver: Receiver<Event>) -> Result<
     // whether the TOML path runs at all, so it has to be settled before
     // `CONFIGURATION_FILE` is first read.
     #[cfg(feature = "lua")]
-    let lua_path = crate::config::ensure_lua_file()
-        .inspect_err(|err| warn!("preparing Lua script: {err}"))
-        .ok()
-        .flatten();
+    let lua_path = match crate::config::ensure_lua_file() {
+        Ok(path) => path,
+        // Emaki-owned: no fallback; Start fails with this error.
+        Err(err) if crate::owned::enabled() => {
+            return Err(crate::errors::Error::InvalidConfig(err.to_string()));
+        }
+        Err(err) => {
+            warn!("preparing Lua script: {err}");
+            None
+        }
+    };
 
     // With an init.lua there is no TOML at all, so watch whichever config files
     // actually exist. Both feed the same `ConfigRefresh` event.
@@ -843,6 +850,13 @@ pub fn setup_bevy_app(sender: EventSender, receiver: Receiver<Event>) -> Result<
         // `gather_initial_processes`). Without `setup`, the TOML config is used.
         if let Some(config) = worker.built_config() {
             app.insert_resource(config);
+        } else if crate::owned::enabled() {
+            // Emaki's settings file always calls `paneru.setup{...}`; without
+            // it the script failed to load. Fail Start rather than run empty.
+            return Err(crate::errors::Error::InvalidConfig(format!(
+                "Emaki configuration '{}' did not load",
+                path.display()
+            )));
         }
         app.insert_resource(worker);
         app.insert_resource(lua::LuaScriptPath(path));

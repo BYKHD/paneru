@@ -49,6 +49,10 @@ pub mod swipe;
 /// `init.lua` exists, since a script disables the TOML entirely (see
 /// [`Config::defaults`]).
 pub static CONFIGURATION_FILE: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
+    // An Emaki-owned engine reads only the Lua file Emaki passes; never TOML.
+    if crate::owned::enabled() {
+        return None;
+    }
     #[cfg(feature = "lua")]
     if let Some(script) = discover_lua_file() {
         info!(
@@ -112,6 +116,9 @@ fn create_configuration_file_at(path: &Path) -> std::io::Result<bool> {
 /// Finds the first existing configuration file from supported locations.
 /// Unlike [`CONFIGURATION_FILE`], this does not panic when no file is found.
 pub fn discover_configuration_file() -> Option<PathBuf> {
+    if crate::owned::enabled() {
+        return None;
+    }
     if let Ok(path_str) = env::var("PANERU_CONFIG") {
         let path = PathBuf::from(path_str);
         if path.exists() {
@@ -183,6 +190,12 @@ fn default_lua_file() -> std::io::Result<PathBuf> {
 /// [`discover_configuration_file`]. Honors `$PANERU_LUA` first.
 #[cfg(feature = "lua")]
 pub fn discover_lua_file() -> Option<PathBuf> {
+    // Emaki-owned: `$PANERU_LUA` or nothing. Never Paneru's default locations.
+    if crate::owned::enabled() {
+        return env::var_os("PANERU_LUA")
+            .map(PathBuf::from)
+            .filter(|path| path.is_file());
+    }
     if let Ok(path_str) = env::var("PANERU_LUA") {
         let path = PathBuf::from(path_str);
         if path.exists() {
@@ -219,6 +232,12 @@ pub fn discover_lua_file() -> Option<PathBuf> {
 pub fn ensure_lua_file() -> std::io::Result<Option<PathBuf>> {
     if let Some(path) = discover_lua_file() {
         return Ok(Some(path));
+    }
+    if crate::owned::enabled() {
+        return Err(std::io::Error::new(
+            ErrorKind::NotFound,
+            "Emaki-owned engine needs $PANERU_LUA to name an existing file",
+        ));
     }
     if let Some(toml) = discover_configuration_file() {
         info!(
