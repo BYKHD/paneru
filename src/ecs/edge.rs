@@ -13,7 +13,7 @@
 //! committed AX origin differs while parked.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bevy::app::{App, Plugin, PostUpdate, Update};
 use bevy::ecs::component::Component;
@@ -26,6 +26,7 @@ use bevy::ecs::schedule::IntoScheduleConfigs as _;
 use bevy::ecs::schedule::common_conditions::{not, resource_exists};
 use bevy::ecs::system::{Commands, Query, Res, ResMut};
 use bevy::math::IRect;
+use bevy::time::Time;
 use tracing::debug;
 
 use crate::commands::Command;
@@ -90,7 +91,7 @@ pub(crate) struct EdgeParked;
 pub(crate) struct DisplayRefresh(pub u32);
 
 #[derive(Component)]
-pub(crate) struct LiveResize(Instant);
+pub(crate) struct LiveResize(Duration);
 
 /// Edge events waiting for subscribers.
 #[derive(Default, Resource)]
@@ -111,7 +112,7 @@ enum Phase {
 #[derive(Debug)]
 struct Handoff {
     phase: Phase,
-    since: Instant,
+    since: Duration,
     /// Came to rest real between `enter` and the rest limit: its switch point
     /// moves out to here.
     rest_anchor: Option<f64>,
@@ -122,7 +123,7 @@ struct Snap {
     strip: Entity,
     from: i32,
     to: i32,
-    start: Instant,
+    start: Duration,
     guard: Entity,
 }
 
@@ -130,7 +131,7 @@ struct Snap {
 struct DisplayMotion {
     strip_x: HashMap<Entity, i32>,
     /// Last motion that was not our own rest snap.
-    last_input: Option<Instant>,
+    last_input: Option<Duration>,
     snap: Option<Snap>,
     last_sent: Option<EdgeState>,
 }
@@ -223,7 +224,8 @@ fn limits(change: f64, enter: f64, exit: f64, anchor: Option<f64>) -> Limits {
     let cross = (change - CROSS_MARGIN).min(0.998);
     let rest_limit = (change - REST_MARGIN).min(0.998);
     let cap = (change - CAP_MARGIN).min(cross);
-    let enter_at = anchor.unwrap_or(enter).min(cap - 0.03).max(0.0);
+    // An anchor is at most the rest limit, so already below the cap.
+    let enter_at = anchor.unwrap_or_else(|| enter.min(cap - 0.03)).max(0.0);
     let cap_at = anchor.map_or(enter + PARK_CAP, |a| a + ANCHOR_CAP).min(cap);
     Limits {
         enter_at,
@@ -237,6 +239,7 @@ fn limits(change: f64, enter: f64, exit: f64, anchor: Option<f64>) -> Limits {
 /// Records user resizes, which suspend handoffs (REST.md).
 fn mark_live_resizes(
     mut messages: MessageReader<Event>,
+    time: Res<Time>,
     windows: Query<(Entity, &Window, Has<ResizeMarker>)>,
     mut commands: Commands,
 ) {
@@ -247,7 +250,7 @@ fn mark_live_resizes(
         if let Some((entity, _, false)) = windows.iter().find(|(_, w, _)| w.id() == *window_id)
             && let Ok(mut cmd) = commands.get_entity(entity)
         {
-            cmd.try_insert(LiveResize(Instant::now()));
+            cmd.try_insert(LiveResize(time.elapsed()));
         }
     }
 }
@@ -287,12 +290,13 @@ fn edge_handoffs(
     mut strips: EdgeStrips,
     displays: Query<(Entity, &Display, Option<&DisplayRefresh>)>,
     config: Res<Config>,
+    time: Res<Time>,
     mut tracker: ResMut<EdgeTracker>,
     mut outbox: ResMut<EdgeOutbox>,
     mut wake: ResMut<EdgeWake>,
     mut commands: Commands,
 ) {
-    let now = Instant::now();
+    let now = time.elapsed();
     let mut replies: HashMap<i32, EdgeCommand> = HashMap::new();
     for event in messages.read() {
         if let Event::Command {
@@ -358,10 +362,10 @@ fn edge_handoffs(
         }
         let resting = motion
             .last_input
-            .is_none_or(|t| now.duration_since(t) >= REST);
+            .is_none_or(|t| now.saturating_sub(t) >= REST);
         if motion
             .last_input
-            .is_some_and(|t| now.duration_since(t) < REST + REST)
+            .is_some_and(|t| now.saturating_sub(t) < REST + REST)
         {
             busy = true;
         }
@@ -392,7 +396,7 @@ fn edge_handoffs(
         // in lockstep under the snap guard.
         if let Some(snap) = &motion.snap {
             let u =
-                (now.duration_since(snap.start).as_secs_f64() / REST_SNAP.as_secs_f64()).min(1.0);
+                (now.saturating_sub(snap.start).as_secs_f64() / REST_SNAP.as_secs_f64()).min(1.0);
             let eased = 1.0 - (1.0 - u).powi(3);
             #[allow(clippy::cast_possible_truncation)]
             let x = snap.from + (f64::from(snap.to - snap.from) * eased).round() as i32;
@@ -450,7 +454,7 @@ fn edge_handoffs(
                 });
                 let vel = handoff.prev_overflow.map_or(0.0, |p| spill - p);
                 handoff.prev_overflow = Some(spill);
-                let resizing = live.is_some_and(|l| now.duration_since(l.0) < LIVE_RESIZE);
+                let resizing = live.is_some_and(|l| now.saturating_sub(l.0) < LIVE_RESIZE);
                 if live.is_some()
                     && !resizing
                     && let Ok(mut cmd) = commands.get_entity(entity)
@@ -526,7 +530,7 @@ fn edge_handoffs(
                             handoff.phase = Phase::Parked;
                             handoff.since = now;
                         } else if matches!(reply, Some(EdgeCommand::Ready(_)))
-                            || now.duration_since(handoff.since) >= RETURN_CAP
+                            || now.saturating_sub(handoff.since) >= RETURN_CAP
                         {
                             window.reposition(position.0);
                             if let Ok(mut cmd) = commands.get_entity(entity) {
@@ -633,6 +637,20 @@ fn edge_handoffs(
 
     tracker.windows.retain(|entity, _| seen.contains(entity));
     wake.0 = busy;
+}
+
+#[cfg(test)]
+pub(crate) fn test_phase(world: &bevy::ecs::world::World, entity: Entity) -> Option<String> {
+    world
+        .get_resource::<EdgeTracker>()?
+        .windows
+        .get(&entity)
+        .map(|handoff| format!("{:?}", handoff.phase))
+}
+
+#[cfg(test)]
+pub(crate) fn test_change(real: IRect, owner: IRect, neighbour: IRect) -> f64 {
+    ownership_change(real, owner, neighbour)
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 mod display;
+mod edge;
 mod focus_or_virtual;
 mod harness;
 mod interaction;
