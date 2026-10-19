@@ -599,13 +599,18 @@ fn ease_out_factor(rate: f64, delta: f64) -> f32 {
 #[instrument(level = Level::TRACE, skip_all)]
 pub(super) fn animate_entities(
     animate: Populated<(&mut Position, Entity, &RepositionMarker)>,
+    drop: Option<Res<super::drop::DropPreview>>,
     time: Res<Time>,
     config: Res<Config>,
     mut commands: Commands,
 ) {
     // Frame-rate-independent exponential smoothing (ease-out).
     // `animation_speed` is the decay rate (per second); higher = snappier.
-    let t = ease_out_factor(config.animation_speed(), time.delta_secs_f64());
+    // Emaki (#33): the drop-preview gap has its own pace.
+    let rate = drop
+        .and_then(|d| d.gap_rate())
+        .unwrap_or_else(|| config.animation_speed());
+    let t = ease_out_factor(rate, time.delta_secs_f64());
 
     animate
         .into_iter()

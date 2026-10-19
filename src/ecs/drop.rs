@@ -41,6 +41,20 @@ use crate::util::round_px;
 /// Set while a drop preview is live, so the event tap can claim Esc.
 pub(crate) static DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Ease-out decay rate (per second) of the gap opening and closing; 12 settles
+/// in about 250 ms. Tuning knob for the owner: re-read at each drag start.
+const GAP_RATE_DEFAULT: f64 = 12.0;
+const GAP_RATE_FILE: &str = "/Users/Shared/EmakiEdge/drop-gap-rate";
+fn load_gap_rate() -> f64 {
+    let rate = std::fs::read_to_string(GAP_RATE_FILE)
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|r| *r > 0.0)
+        .unwrap_or(GAP_RATE_DEFAULT);
+    debug!("drop: gap rate {rate}");
+    rate
+}
+
 /// The window moves at least this far before a press counts as a drag.
 const DRAG_START_PX: i32 = 4;
 /// After release the window stays shielded from reshuffles while it lands.
@@ -83,9 +97,15 @@ struct Session {
 #[derive(Default, Resource)]
 pub(crate) struct DropPreview {
     state: State,
+    gap_rate: f64,
 }
 
 impl DropPreview {
+    /// The animation rate for neighbours while a preview is live.
+    pub(crate) fn gap_rate(&self) -> Option<f64> {
+        matches!(self.state, State::Dragging(_)).then_some(self.gap_rate)
+    }
+
     /// The dragged window while a preview is live: handoffs leave only it alone.
     pub(crate) fn dragged(&self) -> Option<Entity> {
         match &self.state {
@@ -257,6 +277,7 @@ fn drop_preview(
                         hovering: true,
                     });
                 }
+                preview.gap_rate = load_gap_rate();
                 DRAG_ACTIVE.store(true, Ordering::Relaxed);
                 debug!("drop: start {entity} from strip {strip_entity} idx {index}");
                 preview.state = State::Dragging(Session {

@@ -105,6 +105,8 @@ fn drag_to(harness: &mut TestHarness, id: i32, x: i32, y: i32) {
             modifiers,
         },
     );
+    // The gap eases open over a few hundred milliseconds.
+    harness.advance(Duration::from_millis(800));
 }
 
 fn release(harness: &mut TestHarness, x: i32, y: i32) {
