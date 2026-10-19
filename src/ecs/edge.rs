@@ -529,16 +529,19 @@ fn edge_handoffs(
                         if !still_wanted {
                             handoff.phase = Phase::Parked;
                             handoff.since = now;
-                        } else if matches!(reply, Some(EdgeCommand::Ready(_)))
-                            || now.saturating_sub(handoff.since) >= RETURN_CAP
-                        {
+                        } else if let Some(why) = if matches!(reply, Some(EdgeCommand::Ready(_))) {
+                            Some("ready")
+                        } else {
+                            (now.saturating_sub(handoff.since) >= RETURN_CAP)
+                                .then_some("return cap")
+                        } {
                             window.reposition(position.0);
                             if let Ok(mut cmd) = commands.get_entity(entity) {
                                 cmd.try_remove::<EdgeParked>();
                             }
                             // Returned at rest past `enter`: switch from here.
                             handoff.rest_anchor = (spill > enter).then_some(spill);
-                            debug!("edge: restore {id} at {spill:.3}");
+                            debug!("edge: restore {id} at {spill:.3} ({why})");
                             handoff.phase = Phase::Real;
                             handoff.since = now;
                         }
