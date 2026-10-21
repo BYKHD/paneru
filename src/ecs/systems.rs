@@ -84,7 +84,7 @@ type ResizableWindows<'w, 's> = Query<
     (
         &'static mut Window,
         Entity,
-        &'static Position,
+        &'static mut Position,
         &'static mut Bounds,
         Option<&'static Unmanaged>,
         Has<ResizeMarker>,
@@ -815,7 +815,7 @@ pub(super) fn window_resized_update_frame(
             continue;
         };
 
-        let Some((mut window, entity, position, mut bounds, unmanaged, resizing)) = windows
+        let Some((mut window, entity, mut position, mut bounds, unmanaged, resizing)) = windows
             .iter_mut()
             .find(|window| window.0.id() == *window_id)
         else {
@@ -891,6 +891,10 @@ pub(super) fn window_resized_update_frame(
             // Search marke: reposition_entity - Updating position directly to reduce jitter.
             strip_position.0.x += shift;
         }
+        // Emaki (#37): macOS can report one resize several times before the
+        // layout runs again. Record where the window now is, so a repeat
+        // compares against it and does not shift the strip a second time.
+        position.bypass_change_detection().0 = new_frame.min;
 
         // When the user drags the top edge of a stacked window, we adjust the window above to
         // accomodate.
