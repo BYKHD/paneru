@@ -106,7 +106,12 @@ impl Plugin for WorkspaceEventsPlugin {
                 workspace_created_handler,
                 show_active_workspace,
                 handle_virtual_window_moves,
-                detect_moved_windows.run_if(not(resource_exists::<Initializing>)),
+                // Emaki (#37): Mission Control flips the active display back
+                // and forth mid-drag; moves are reconciled once it closes.
+                detect_moved_windows
+                    .run_if(not(resource_exists::<Initializing>))
+                    .run_if(|mc: Res<crate::ecs::MissionControlActive>| !mc.0),
+                reconcile_after_mission_control,
             ),
         );
         app.add_systems(PostUpdate, workspace_destroyed_handler);
@@ -390,6 +395,67 @@ fn detect_moved_windows(
             } else {
                 for moving_entity in &moving_entities {
                     strip.remove(*moving_entity);
+                }
+            }
+        }
+    }
+}
+
+/// Emaki (#37): Mission Control moves windows between displays itself, and
+/// mid-drag the active display flips back and forth, so the per-activation
+/// [`detect_moved_windows`] waits. Once the overview closes, every space's
+/// selected strip takes the windows macOS now reports in that space.
+fn reconcile_after_mission_control(
+    mission_control: Res<crate::ecs::MissionControlActive>,
+    mut was_open: Local<bool>,
+    mut workspaces: Query<(
+        &mut LayoutStrip,
+        Entity,
+        Has<SelectedVirtualMarker>,
+        Has<NativeFullscreenMarker>,
+    )>,
+    window_manager: Res<WindowManager>,
+    windows: Windows,
+) {
+    let closed = *was_open && !mission_control.0;
+    *was_open = mission_control.0;
+    if !closed {
+        return;
+    }
+    let selected = workspaces
+        .iter()
+        .filter(|(_, _, selected, fullscreen)| *selected && !*fullscreen)
+        .map(|(strip, entity, _, _)| (entity, strip.id()))
+        .collect::<Vec<_>>();
+    for (into, space) in selected {
+        let strips = workspaces
+            .iter()
+            .filter_map(|(strip, _, _, _)| (strip.id() == space).then_some(strip))
+            .collect::<Vec<_>>();
+        let find_window = |id| windows.find_managed(id).map(|(_, entity)| entity);
+        let Ok((moved, _)) = windows_not_in_strips(space, find_window, &strips, &window_manager)
+        else {
+            continue;
+        };
+        for entity in moved {
+            if workspaces
+                .iter()
+                .any(|(strip, _, _, fullscreen)| fullscreen && strip.contains(entity))
+            {
+                continue;
+            }
+            debug!("Window {entity} moved to workspace {space} in Mission Control.");
+            let group = workspaces
+                .iter()
+                .find_map(|(strip, _, _, _)| strip.tab_group(entity))
+                .unwrap_or_else(|| vec![entity]);
+            for (mut strip, strip_entity, _, _) in &mut workspaces {
+                if strip_entity == into {
+                    strip.append_tab_group(&group);
+                } else {
+                    for member in &group {
+                        strip.remove(*member);
+                    }
                 }
             }
         }

@@ -236,25 +236,25 @@ fn a_drag_takes_a_window_across_and_it_is_left_there() {
 
 #[test]
 fn mission_control_never_leaves_a_window_across() {
-    // Emaki (#37): a window moved to this display in Mission Control joins the
-    // strip's end, which can lie past the shared edge. Left there, macOS hands
-    // it back to the other display. Seen live on 2026-10-22.
+    // Emaki (#37): Mission Control is the user's, so nothing parks while it is
+    // open. Once it closes, a window left past the shared edge parks; the
+    // click that closed it is no drag. Seen live on 2026-10-22.
     let mut harness = harness();
     let probe = Probe::new(&mut harness, 1);
     harness
         .world()
         .insert_resource(crate::ecs::MissionControlActive(true));
-    // The user is dragging a thumbnail: the button is down.
     mouse(&mut harness, true);
     let past = TEST_DISPLAY_WIDTH - probe.slot(&mut harness).min.x + 20;
     probe.shift(&mut harness, past);
     harness.advance(std::time::Duration::from_millis(100));
-    assert!(probe.parked(&mut harness), "{}", probe.phase(&mut harness));
-    assert_eq!(probe.committed(&mut harness).max.x, 5);
+    assert!(!probe.parked(&mut harness), "{}", probe.phase(&mut harness));
     mouse(&mut harness, false);
+    harness.advance(std::time::Duration::from_millis(40));
     harness
         .world()
         .insert_resource(crate::ecs::MissionControlActive(false));
-    harness.advance(std::time::Duration::from_millis(500));
+    harness.advance(std::time::Duration::from_millis(100));
     assert!(probe.parked(&mut harness), "{}", probe.phase(&mut harness));
+    assert_eq!(probe.committed(&mut harness).max.x, 5);
 }

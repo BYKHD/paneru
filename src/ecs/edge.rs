@@ -182,6 +182,8 @@ struct EdgeTracker {
     /// rest snap moves it until the next scroll. Knob `resize-snap` = `snap`
     /// restores the snap.
     hold_after_resize: bool,
+    /// Emaki (#37): Mission Control was open last frame.
+    mc_was_open: bool,
     /// Real windows the user put past the edge: left alone, not parked back.
     foreign: std::collections::HashSet<Entity>,
     windows: HashMap<Entity, Handoff>,
@@ -404,6 +406,11 @@ fn edge_handoffs(
     // places windows at once, with no glass, while the overview closes.
     let mc_open = mission_control.is_some_and(|mc| mc.0);
     let mc_place = mc_open && MC_EARLY.load(std::sync::atomic::Ordering::Relaxed);
+    // The click that closed the overview dragged no real window: no grace.
+    if tracker.mc_was_open && !mc_open {
+        tracker.hands_off_until = now;
+    }
+    tracker.mc_was_open = mc_open;
     // Emaki (#33): during a drop preview only the dragged window is the user's;
     // neighbours sliding aside still hand off, and no rest snap moves the strip.
     let dragged = drop.and_then(|d| d.dragged());
@@ -559,8 +566,9 @@ fn edge_handoffs(
                 let live_now = live.is_some_and(|l| now.saturating_sub(l.0) < LIVE_RESIZE);
                 let hands_off =
                     hands_off_all || dragged == Some(entity) || (live_resize && live_now);
-                // Mission Control moves no real window by hand: a window it
-                // brings over is the strip's, never the user's to leave across.
+                // Emaki (#37): a window Mission Control moved is placed in the
+                // right strip once it closes; it is not the user's to leave
+                // across.
                 let user_moving = hands_off && !mc_open;
                 let resizing = hands_off || live_now;
                 if live.is_some()
@@ -623,14 +631,6 @@ fn edge_handoffs(
                         if mc_place && !foreign && spill > lim.rest_limit =>
                     {
                         park(&mut window, handoff, "mission control");
-                    }
-                    // Emaki (#37): no glass while the overview is open, but
-                    // nothing is left past the ownership change either, or
-                    // macOS gives the window to the other display.
-                    Phase::Real | Phase::Approaching
-                        if mc_open && !foreign && spill >= lim.cross =>
-                    {
-                        park(&mut window, handoff, "never-cross");
                     }
                     _ if hands_off || foreign => {}
                     Phase::Real => {

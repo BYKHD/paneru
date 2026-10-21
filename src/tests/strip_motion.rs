@@ -144,3 +144,35 @@ fn a_resize_reported_twice_shifts_the_strip_once() {
     assert_eq!(x_of(&mut h, 2), right + 60, "right side follows the right edge");
     release(&mut h);
 }
+
+fn strip_of(h: &mut TestHarness, id: i32) -> Option<u64> {
+    let e = find_window_entity(id, h.world());
+    let world = h.world();
+    world
+        .query::<&crate::ecs::layout::LayoutStrip>()
+        .iter(world)
+        .find(|strip| strip.contains(e))
+        .map(crate::ecs::layout::LayoutStrip::id)
+}
+
+#[test]
+fn a_window_moved_in_mission_control_joins_its_new_display_once_it_closes() {
+    // macOS moves the real window during a Mission Control drag, and the
+    // active display flips back and forth; seen live on 2026-10-22.
+    let mut h = harness(3);
+    assert_eq!(strip_of(&mut h, 2), Some(TEST_WORKSPACE_ID));
+    h.world()
+        .insert_resource(crate::ecs::MissionControlActive(true));
+    h.advance(Duration::from_millis(32));
+    h.mock_state.update_window(2, |w| {
+        w.workspace_id = EXT_WORKSPACE_ID;
+        w.frame = IRect::new(TEST_DISPLAY_WIDTH + 100, 0, TEST_DISPLAY_WIDTH + 600, 1080);
+    });
+    h.advance(Duration::from_millis(100));
+    assert_eq!(strip_of(&mut h, 2), Some(TEST_WORKSPACE_ID), "nothing moves while open");
+    h.world()
+        .insert_resource(crate::ecs::MissionControlActive(false));
+    h.advance(Duration::from_millis(100));
+    assert_eq!(strip_of(&mut h, 2), Some(EXT_WORKSPACE_ID));
+    assert_eq!(strip_of(&mut h, 1), Some(TEST_WORKSPACE_ID), "the rest stay");
+}
