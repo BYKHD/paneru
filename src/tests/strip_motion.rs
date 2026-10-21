@@ -226,3 +226,48 @@ fn a_window_moved_in_mission_control_joins_its_new_display_once_it_closes() {
         "the rest stay"
     );
 }
+
+fn strip_x(h: &mut TestHarness) -> i32 {
+    let e = find_window_entity(0, h.world());
+    let world = h.world();
+    world
+        .query::<(&crate::ecs::layout::LayoutStrip, &Position)>()
+        .iter(world)
+        .find(|(strip, _)| strip.contains(e))
+        .map(|(_, p)| p.0.x)
+        .unwrap()
+}
+
+#[test]
+fn a_focus_in_mission_control_scrolls_only_once_it_has_closed() {
+    // Clicking a thumbnail focuses its window while the overview is still
+    // open. Scrolling then carries neighbours across the shared edge with
+    // nothing to park them, and macOS gives them to the other display. Seen
+    // live on 2026-10-22.
+    let mut h = harness(3);
+    let x = x_of(&mut h, 0);
+    h.world()
+        .insert_resource(crate::ecs::MissionControlActive(true));
+    h.advance(Duration::from_millis(32));
+    // Window 0 off to the left: focusing it wants a scroll.
+    let e = find_window_entity(0, h.world());
+    let world = h.world();
+    let strip = world
+        .query::<(Entity, &crate::ecs::layout::LayoutStrip)>()
+        .iter(world)
+        .find(|(_, s)| s.contains(e))
+        .map(|(e, _)| e)
+        .unwrap();
+    h.world().get_mut::<Position>(strip).unwrap().0.x -= 1500;
+    h.advance(Duration::from_millis(32));
+    let before = strip_x(&mut h);
+    h.mock_state.focus_window(0);
+    h.advance(Duration::from_millis(300));
+    assert_eq!(strip_x(&mut h), before, "no scroll while open");
+    h.world()
+        .insert_resource(crate::ecs::MissionControlActive(false));
+    h.advance(Duration::from_millis(48));
+    assert_eq!(strip_x(&mut h), before, "nor while the layout settles");
+    h.advance(Duration::from_millis(600));
+    assert!(x_of(&mut h, 0) >= x.min(0), "then it scrolls to the window");
+}

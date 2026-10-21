@@ -1240,11 +1240,12 @@ fn reshuffle_layout_strip(
     windows: Windows,
     config: Res<Config>,
     mission_control: Res<crate::ecs::MissionControlActive>,
+    mc_hold: Option<Res<crate::ecs::edge::MissionControlHold>>,
     mut commands: Commands,
 ) {
     // Emaki (#37, `after` mode): a Mission Control selection waits until the
-    // overview has closed, then eases.
-    if mission_control.0 && !crate::ecs::edge::mc_early() {
+    // overview has closed and its layout settled, then eases.
+    if crate::ecs::edge::mc_scroll_held(mission_control.0, mc_hold.as_deref()) {
         return;
     }
     markers.into_iter().for_each(|(entity, layout_position)| {
@@ -1375,7 +1376,7 @@ fn reshuffle_layout_strip(
 /// the per-window animator slides the entity into its slot. Only when the new
 /// slot would fall past an edge does the strip translate, and only by the
 /// shortfall — never to anchor the entity to a particular position.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 #[instrument(level = Level::DEBUG, skip_all)]
 fn ensure_visible_in_strip(
     markers: Query<(Entity, &LayoutPosition, &EnsureVisibleMarker)>,
@@ -1386,8 +1387,15 @@ fn ensure_visible_in_strip(
     displays: DisplayViewports,
     windows: Windows,
     config: Res<Config>,
+    mission_control: Res<crate::ecs::MissionControlActive>,
+    mc_hold: Option<Res<crate::ecs::edge::MissionControlHold>>,
     mut commands: Commands,
 ) {
+    // Emaki (#37): as in `reshuffle_layout_strip`; a focus from a Mission
+    // Control thumbnail scrolls once the overview has closed.
+    if crate::ecs::edge::mc_scroll_held(mission_control.0, mc_hold.as_deref()) {
+        return;
+    }
     for (entity, layout_position, marker) in markers {
         if let Ok(mut cmd) = commands.get_entity(entity) {
             cmd.try_remove::<EnsureVisibleMarker>();

@@ -93,6 +93,15 @@ static BUTTON_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 static RESIZED_SINCE_PRESS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 static MC_EARLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Emaki (#37): Mission Control open, or closed and its layout still settling.
+#[derive(Default, Resource)]
+pub(crate) struct MissionControlHold(bool);
+
+/// Emaki (#37, `after` mode): strip scrolls wait while this holds, so that no
+/// window crosses the shared edge while nothing parks it.
+pub(crate) fn mc_scroll_held(mission_control: bool, hold: Option<&MissionControlHold>) -> bool {
+    (mission_control || hold.is_some_and(|h| h.0)) && !mc_early()
+}
 
 fn update_motion_direct() {
     use std::sync::atomic::Ordering::Relaxed;
@@ -110,6 +119,7 @@ impl Plugin for EdgePlugin {
         app.init_resource::<EdgeOutbox>()
             .init_resource::<EdgeWake>()
             .init_resource::<EdgeTracker>()
+            .init_resource::<MissionControlHold>()
             .add_systems(Update, mark_live_resizes)
             .add_systems(
                 PostUpdate,
@@ -376,6 +386,7 @@ fn edge_handoffs(
     drop: Option<Res<crate::ecs::drop::DropPreview>>,
     time: Res<Time>,
     mut tracker: ResMut<EdgeTracker>,
+    mut mc_hold_out: ResMut<MissionControlHold>,
     mut outbox: ResMut<EdgeOutbox>,
     mut wake: ResMut<EdgeWake>,
     mut commands: Commands,
@@ -429,6 +440,7 @@ fn edge_handoffs(
     }
     tracker.mc_was_open = mc_open;
     let mc_hold = mc_open || now < tracker.mc_settle_until;
+    mc_hold_out.0 = mc_hold;
     // Emaki (#33): during a drop preview only the dragged window is the user's;
     // neighbours sliding aside still hand off, and no rest snap moves the strip.
     let dragged = drop.and_then(|d| d.dragged());
