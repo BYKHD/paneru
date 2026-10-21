@@ -50,7 +50,8 @@ fn dock_overview_visible(dock: Pid) -> bool {
         .iter()
         .map(|id| CGDisplayBounds(*id))
         .collect::<Vec<_>>();
-    let Some(list) = CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenOnly, kCGNullWindowID)
+    let Some(list) =
+        CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenOnly, kCGNullWindowID)
     else {
         return false;
     };
@@ -175,7 +176,10 @@ impl MissionControlHandler {
                     let now = dock_overview_visible(pid);
                     if now != open {
                         open = now;
-                        debug!("emaki: Mission Control {}", if open { "shown" } else { "exited" });
+                        debug!(
+                            "emaki: Mission Control {}",
+                            if open { "shown" } else { "exited" }
+                        );
                         _ = events.send(if open {
                             Event::MissionControlShowAllWindows
                         } else {

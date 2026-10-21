@@ -37,14 +37,21 @@ fn right_edge_drag(h: &mut TestHarness, id: i32, steps: i32, step: i32, jitter: 
     let Origin { x, y } = h.world().get::<Position>(e).unwrap().0;
     let size = h.world().get::<crate::ecs::Bounds>(e).unwrap().0;
     let at = CGPoint::new(f64::from(x + size.x), f64::from(y + 300));
-    h.world().write_message(Event::MouseDown { point: at, modifiers: m });
+    h.world().write_message(Event::MouseDown {
+        point: at,
+        modifiers: m,
+    });
     h.advance(Duration::from_millis(16));
     for i in 1..=steps {
         if jitter != 0 {
             h.mock_state.os_move_window(id, Origin::new(x + jitter, y));
         }
-        h.mock_state.os_resize_window(id, Size::new(size.x + step * i, size.y));
-        h.world().write_message(Event::MouseDragged { point: at, modifiers: m });
+        h.mock_state
+            .os_resize_window(id, Size::new(size.x + step * i, size.y));
+        h.world().write_message(Event::MouseDragged {
+            point: at,
+            modifiers: m,
+        });
         h.advance(Duration::from_millis(16));
     }
     // The layout follows the last event a frame later; the button stays held.
@@ -67,7 +74,11 @@ fn a_right_edge_drag_leaves_the_left_side_still() {
     let mut h = harness(3);
     let left = x_of(&mut h, 0);
     right_edge_drag(&mut h, 1, 6, 30, 1);
-    assert_eq!(x_of(&mut h, 0), left, "left neighbour moved during the drag");
+    assert_eq!(
+        x_of(&mut h, 0),
+        left,
+        "left neighbour moved during the drag"
+    );
     release(&mut h);
 }
 
@@ -100,18 +111,33 @@ fn a_centred_resize_moves_both_sides_by_half() {
     let Origin { x, y } = h.world().get::<Position>(e).unwrap().0;
     let size = h.world().get::<crate::ecs::Bounds>(e).unwrap().0;
     let at = CGPoint::new(f64::from(x + size.x), f64::from(y + 300));
-    h.world().write_message(Event::MouseDown { point: at, modifiers: m });
+    h.world().write_message(Event::MouseDown {
+        point: at,
+        modifiers: m,
+    });
     h.advance(Duration::from_millis(16));
     for i in 1..=6 {
         h.mock_state.os_move_window(1, Origin::new(x - 10 * i, y));
-        h.mock_state.os_resize_window(1, Size::new(size.x + 20 * i, size.y));
-        h.world().write_message(Event::MouseDragged { point: at, modifiers: m });
+        h.mock_state
+            .os_resize_window(1, Size::new(size.x + 20 * i, size.y));
+        h.world().write_message(Event::MouseDragged {
+            point: at,
+            modifiers: m,
+        });
         h.advance(Duration::from_millis(16));
     }
     h.advance(Duration::from_millis(32));
-    assert_eq!(x_of(&mut h, 0), left - 60, "left side follows the left edge");
+    assert_eq!(
+        x_of(&mut h, 0),
+        left - 60,
+        "left side follows the left edge"
+    );
     assert_eq!(x_of(&mut h, 1), x - 60, "the window keeps its centre");
-    assert_eq!(x_of(&mut h, 2), right + 60, "right side follows the right edge");
+    assert_eq!(
+        x_of(&mut h, 2),
+        right + 60,
+        "right side follows the right edge"
+    );
     release(&mut h);
 }
 
@@ -126,22 +152,38 @@ fn a_resize_reported_twice_shifts_the_strip_once() {
     let Origin { x, y } = h.world().get::<Position>(e).unwrap().0;
     let size = h.world().get::<crate::ecs::Bounds>(e).unwrap().0;
     let at = CGPoint::new(f64::from(x + size.x), f64::from(y + 300));
-    h.world().write_message(Event::MouseDown { point: at, modifiers: m });
+    h.world().write_message(Event::MouseDown {
+        point: at,
+        modifiers: m,
+    });
     h.advance(Duration::from_millis(16));
     for i in 1..=6 {
         // A centred resize arrives as resize events alone, no `WindowMoved`.
         h.mock_state.update_window(1, |w| {
             w.frame = IRect::new(x - 10 * i, y, x + size.x + 10 * i, y + size.y);
         });
-        h.mock_state.os_resize_window(1, Size::new(size.x + 20 * i, size.y));
-        h.mock_state.os_resize_window(1, Size::new(size.x + 20 * i, size.y));
-        h.world().write_message(Event::MouseDragged { point: at, modifiers: m });
+        h.mock_state
+            .os_resize_window(1, Size::new(size.x + 20 * i, size.y));
+        h.mock_state
+            .os_resize_window(1, Size::new(size.x + 20 * i, size.y));
+        h.world().write_message(Event::MouseDragged {
+            point: at,
+            modifiers: m,
+        });
         h.advance(Duration::from_millis(16));
     }
     h.advance(Duration::from_millis(32));
-    assert_eq!(x_of(&mut h, 0), left - 60, "left side follows the left edge");
+    assert_eq!(
+        x_of(&mut h, 0),
+        left - 60,
+        "left side follows the left edge"
+    );
     assert_eq!(x_of(&mut h, 1), x - 60, "the window keeps its centre");
-    assert_eq!(x_of(&mut h, 2), right + 60, "right side follows the right edge");
+    assert_eq!(
+        x_of(&mut h, 2),
+        right + 60,
+        "right side follows the right edge"
+    );
     release(&mut h);
 }
 
@@ -169,10 +211,18 @@ fn a_window_moved_in_mission_control_joins_its_new_display_once_it_closes() {
         w.frame = IRect::new(TEST_DISPLAY_WIDTH + 100, 0, TEST_DISPLAY_WIDTH + 600, 1080);
     });
     h.advance(Duration::from_millis(100));
-    assert_eq!(strip_of(&mut h, 2), Some(TEST_WORKSPACE_ID), "nothing moves while open");
+    assert_eq!(
+        strip_of(&mut h, 2),
+        Some(TEST_WORKSPACE_ID),
+        "nothing moves while open"
+    );
     h.world()
         .insert_resource(crate::ecs::MissionControlActive(false));
     h.advance(Duration::from_millis(100));
     assert_eq!(strip_of(&mut h, 2), Some(EXT_WORKSPACE_ID));
-    assert_eq!(strip_of(&mut h, 1), Some(TEST_WORKSPACE_ID), "the rest stay");
+    assert_eq!(
+        strip_of(&mut h, 1),
+        Some(TEST_WORKSPACE_ID),
+        "the rest stay"
+    );
 }

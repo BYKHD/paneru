@@ -93,8 +93,8 @@ static MC_EARLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 
 fn update_motion_direct() {
     use std::sync::atomic::Ordering::Relaxed;
-    let direct = BUTTON_DOWN.load(Relaxed) && RESIZED_SINCE_PRESS.load(Relaxed)
-        || MC_EARLY.load(Relaxed);
+    let direct =
+        BUTTON_DOWN.load(Relaxed) && RESIZED_SINCE_PRESS.load(Relaxed) || MC_EARLY.load(Relaxed);
     if MOTION_DIRECT.swap(direct, Relaxed) != direct {
         debug!(target: "emaki::motion", "direct motion {direct}");
     }
@@ -271,6 +271,16 @@ struct Limits {
     cross: f64,
 }
 
+/// Emaki (#37): flush inside the outer edge, fully on the owning display.
+fn inside_origin(slot: IRect, owner: IRect, h_pad: i32, side: EdgeSide) -> Origin {
+    let real_width = slot.width() - 2 * h_pad;
+    let x = match side {
+        EdgeSide::Right => owner.min.x,
+        EdgeSide::Left => (owner.max.x - real_width).max(owner.min.x),
+    };
+    Origin::new(x - h_pad, slot.min.y)
+}
+
 fn limits(change: f64, enter: f64, exit: f64, anchor: Option<f64>) -> Limits {
     let cross = (change - CROSS_MARGIN).min(0.998);
     let rest_limit = (change - REST_MARGIN).min(0.998);
@@ -406,8 +416,10 @@ fn edge_handoffs(
     // places windows at once, with no glass, while the overview closes.
     let mc_open = mission_control.is_some_and(|mc| mc.0);
     let mc_place = mc_open && MC_EARLY.load(std::sync::atomic::Ordering::Relaxed);
+    let mc_opening = mc_open && !tracker.mc_was_open;
+    let mc_closing = !mc_open && tracker.mc_was_open;
     // The click that closed the overview dragged no real window: no grace.
-    if tracker.mc_was_open && !mc_open {
+    if mc_closing {
         tracker.hands_off_until = now;
     }
     tracker.mc_was_open = mc_open;
@@ -415,8 +427,8 @@ fn edge_handoffs(
     // neighbours sliding aside still hand off, and no rest snap moves the strip.
     let dragged = drop.and_then(|d| d.dragged());
     // Emaki (#37): during a live resize only the resized window is the user's.
-    let live_resize = tracker.button_down
-        && RESIZED_SINCE_PRESS.load(std::sync::atomic::Ordering::Relaxed);
+    let live_resize =
+        tracker.button_down && RESIZED_SINCE_PRESS.load(std::sync::atomic::Ordering::Relaxed);
     let hands_off_all = mc_open
         || dragged.is_none()
             && !live_resize
@@ -603,6 +615,25 @@ fn edge_handoffs(
                     handoff.phase = Phase::Parked;
                     handoff.since = now;
                 };
+
+                // Emaki (#37): Mission Control moves a window to the other
+                // display at the same place relative to the display, so a
+                // sliver at the outer edge lands on the shared side, mostly
+                // across, and macOS hands it back. While the overview is open
+                // a parked window sits flush inside its outer edge. On close
+                // it goes straight back, or, moved to the other display (no
+                // longer `EdgeParked`), is real there.
+                if mc_opening && parked {
+                    window.reposition(inside_origin(slot, owner, h_pad, side));
+                } else if mc_closing && matches!(handoff.phase, Phase::Parked | Phase::Returning) {
+                    if parked {
+                        window.reposition(park_origin(slot, owner, h_pad, v_pad, side));
+                        handoff.phase = Phase::Parked;
+                    } else {
+                        handoff.phase = Phase::Real;
+                    }
+                    handoff.since = now;
+                }
 
                 // Hands off: the user moves windows; nothing parks, returns or
                 // is guarded, so a drag can take a window to the other display.

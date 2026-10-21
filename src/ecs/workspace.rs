@@ -111,7 +111,9 @@ impl Plugin for WorkspaceEventsPlugin {
                 detect_moved_windows
                     .run_if(not(resource_exists::<Initializing>))
                     .run_if(|mc: Res<crate::ecs::MissionControlActive>| !mc.0),
-                reconcile_after_mission_control,
+                // Before `edge_handoffs` sees the close, so a parked window
+                // Mission Control moved is not sent back to its old display.
+                reconcile_after_mission_control.after(super::triggers::mission_control_trigger),
             ),
         );
         app.add_systems(PostUpdate, workspace_destroyed_handler);
@@ -416,6 +418,7 @@ fn reconcile_after_mission_control(
     )>,
     window_manager: Res<WindowManager>,
     windows: Windows,
+    mut commands: Commands,
 ) {
     let closed = *was_open && !mission_control.0;
     *was_open = mission_control.0;
@@ -445,6 +448,9 @@ fn reconcile_after_mission_control(
                 continue;
             }
             debug!("Window {entity} moved to workspace {space} in Mission Control.");
+            if let Ok(mut cmd) = commands.get_entity(entity) {
+                cmd.try_remove::<crate::ecs::edge::EdgeParked>();
+            }
             let group = workspaces
                 .iter()
                 .find_map(|(strip, _, _, _)| strip.tab_group(entity))

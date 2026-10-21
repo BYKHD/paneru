@@ -258,3 +258,62 @@ fn mission_control_never_leaves_a_window_across() {
     assert!(probe.parked(&mut harness), "{}", probe.phase(&mut harness));
     assert_eq!(probe.committed(&mut harness).max.x, 5);
 }
+
+fn set_mission_control(harness: &mut TestHarness, open: bool) {
+    harness
+        .world()
+        .insert_resource(crate::ecs::MissionControlActive(open));
+    harness.advance(std::time::Duration::from_millis(60));
+}
+
+fn strip_id(harness: &mut TestHarness, entity: Entity) -> Option<u64> {
+    let world = harness.world();
+    world
+        .query::<&LayoutStrip>()
+        .iter(world)
+        .find(|strip| strip.contains(entity))
+        .map(LayoutStrip::id)
+}
+
+#[test]
+fn mission_control_shows_a_parked_window_inside_its_outer_edge() {
+    // Emaki (#37): Mission Control moves a window to the other display at the
+    // same place relative to the display. A sliver parked at the outer edge
+    // lands on the destination's shared side, mostly across, and macOS hands
+    // it back. While the overview is open it sits flush inside instead.
+    let mut harness = harness();
+    let probe = Probe::new(&mut harness, 1);
+    scroll_out(&mut harness, &probe, 8, false);
+    let sliver = probe.committed(&mut harness);
+    set_mission_control(&mut harness, true);
+    let shown = probe.committed(&mut harness);
+    assert_eq!(shown.min.x, 0, "{shown:?}");
+    assert_eq!(shown.size(), sliver.size());
+    set_mission_control(&mut harness, false);
+    assert!(probe.parked(&mut harness), "{}", probe.phase(&mut harness));
+    assert_eq!(probe.committed(&mut harness), sliver, "straight back");
+}
+
+#[test]
+fn a_parked_window_mission_control_moves_joins_its_new_display() {
+    let mut harness = harness();
+    let probe = Probe::new(&mut harness, 1);
+    scroll_out(&mut harness, &probe, 8, false);
+    set_mission_control(&mut harness, true);
+    let n = neighbour();
+    harness.mock_state.update_window(1, |w| {
+        w.workspace_id = EXT_WORKSPACE_ID;
+        w.frame = IRect::new(n.min.x, n.min.y, n.min.x + 700, n.min.y + 600);
+    });
+    set_mission_control(&mut harness, false);
+    // No detour: from the close on, the window never leaves its new display.
+    for _ in 0..30 {
+        let committed = probe.committed(&mut harness);
+        assert!(n.contains(committed.center()), "{committed:?}");
+        harness.advance(std::time::Duration::from_millis(FRAME_MS));
+    }
+    assert_eq!(strip_id(&mut harness, probe.entity), Some(EXT_WORKSPACE_ID));
+    assert!(!probe.parked(&mut harness), "{}", probe.phase(&mut harness));
+    let committed = probe.committed(&mut harness);
+    assert!(n.contains(committed.center()), "{committed:?}");
+}
