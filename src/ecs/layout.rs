@@ -1239,8 +1239,14 @@ fn reshuffle_layout_strip(
     displays: DisplayViewports,
     windows: Windows,
     config: Res<Config>,
+    mission_control: Res<crate::ecs::MissionControlActive>,
     mut commands: Commands,
 ) {
+    // Emaki (#37, `after` mode): a Mission Control selection waits until the
+    // overview has closed, then eases.
+    if mission_control.0 && !crate::ecs::edge::mc_early() {
+        return;
+    }
     markers.into_iter().for_each(|(entity, layout_position)| {
         if let Ok(mut cmd) = commands.get_entity(entity) {
             cmd.try_remove::<ReshuffleAroundMarker>();

@@ -84,9 +84,9 @@ fn scroll_out(harness: &mut TestHarness, probe: &Probe, step: i32, reply: bool) 
         let committed = probe.committed(harness);
         let change = test_change(committed, owner(), neighbour());
         if probe.parked(harness) {
-            // The 40x32 remnant in the bottom outer (left) corner.
-            assert_eq!(committed.max.x, 40, "{committed:?}");
-            assert_eq!(committed.min.y, TEST_DISPLAY_HEIGHT - 32, "{committed:?}");
+            // Emaki (#44): a 5 pt sliver at the outer (left) edge, same height.
+            assert_eq!(committed.max.x, 5, "{committed:?}");
+            assert_eq!(committed.min.y, before.min.y, "{committed:?}");
             return overflow(before);
         }
         assert!(

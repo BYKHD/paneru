@@ -63,8 +63,42 @@ const RETURN_CAP: Duration = Duration::from_millis(400);
 const LIVE_RESIZE: Duration = Duration::from_millis(300);
 /// After a drag, resize or Mission Control ends, handoffs wait this long.
 const HANDS_OFF_GRACE: Duration = Duration::from_millis(500);
-/// The remnant macOS keeps of a window parked in a bottom outer corner (#9).
-const REMNANT: (i32, i32) = (40, 32);
+/// Emaki (#44, #46): a parked window leaves this much at its owning display's
+/// outer edge.
+const SLIVER: i32 = 5;
+
+/// Emaki (#37): throwaway owner knobs, read when needed.
+pub(crate) fn knob(name: &str, default: &str) -> String {
+    std::fs::read_to_string(format!("/Users/Shared/EmakiEdge/{name}"))
+        .map(|s| s.trim().to_owned())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_owned())
+}
+/// `early`: a Mission Control selection places the strip and window while the
+/// overview closes. `after`: the strip eases once it has closed.
+pub(crate) fn mc_early() -> bool {
+    knob("mc-select", "early") != "after"
+}
+
+/// Emaki (#37): while set, strip and window moves land in one tick: during a
+/// live resize (neighbours track the edge) and, in `early` mode, while Mission
+/// Control is open.
+pub(crate) static MOTION_DIRECT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static BUTTON_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RESIZED_SINCE_PRESS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static MC_EARLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn update_motion_direct() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let direct = BUTTON_DOWN.load(Relaxed) && RESIZED_SINCE_PRESS.load(Relaxed)
+        || MC_EARLY.load(Relaxed);
+    if MOTION_DIRECT.swap(direct, Relaxed) != direct {
+        debug!(target: "emaki::motion", "direct motion {direct}");
+    }
+}
 
 pub struct EdgePlugin;
 
@@ -144,6 +178,10 @@ struct EdgeTracker {
     /// Control open: windows move by the user's hand, never by handoffs.
     button_down: bool,
     hands_off_until: Duration,
+    /// Emaki (#37): a live resize left the strip where the user put it; no
+    /// rest snap moves it until the next scroll. Knob `resize-snap` = `snap`
+    /// restores the snap.
+    hold_after_resize: bool,
     /// Real windows the user put past the edge: left alone, not parked back.
     foreign: std::collections::HashSet<Entity>,
     windows: HashMap<Entity, Handoff>,
@@ -210,13 +248,16 @@ fn thresholds(refresh_hz: u32) -> (f64, f64) {
     }
 }
 
-/// Padded origin that leaves the 40x32 remnant in the bottom outer corner.
-fn park_origin(slot: IRect, owner: IRect, h_pad: i32, v_pad: i32, side: EdgeSide) -> Origin {
+/// Padded origin beyond the owning display's outer edge (opposite `side`, the
+/// shared edge), leaving a plain `SLIVER` at the same height (#44, #48).
+fn park_origin(slot: IRect, owner: IRect, h_pad: i32, _v_pad: i32, side: EdgeSide) -> Origin {
+    let real_width = slot.width() - 2 * h_pad;
     let x = match side {
-        EdgeSide::Right => owner.min.x - slot.width() + h_pad + REMNANT.0,
-        EdgeSide::Left => owner.max.x - h_pad - REMNANT.0,
+        EdgeSide::Right => owner.min.x - real_width + SLIVER,
+        EdgeSide::Left => owner.max.x - SLIVER,
     };
-    Origin::new(x, owner.max.y - v_pad - REMNANT.1)
+    // `reposition` adds the padding back.
+    Origin::new(x - h_pad, slot.min.y)
 }
 
 #[derive(Clone, Copy)]
@@ -249,9 +290,19 @@ fn mark_live_resizes(
     mut messages: MessageReader<Event>,
     time: Res<Time>,
     windows: Query<(Entity, &Window, Has<ResizeMarker>)>,
+    mission_control: Option<Res<crate::ecs::MissionControlActive>>,
     mut commands: Commands,
 ) {
+    use std::sync::atomic::Ordering::Relaxed;
     for event in messages.read() {
+        match event {
+            Event::MouseDown { .. } => {
+                BUTTON_DOWN.store(true, Relaxed);
+                RESIZED_SINCE_PRESS.store(false, Relaxed);
+            }
+            Event::MouseUp { .. } => BUTTON_DOWN.store(false, Relaxed),
+            _ => {}
+        }
         let Event::WindowResized { window_id } = event else {
             continue;
         };
@@ -259,8 +310,15 @@ fn mark_live_resizes(
             && let Ok(mut cmd) = commands.get_entity(entity)
         {
             cmd.try_insert(LiveResize(time.elapsed()));
+            if BUTTON_DOWN.load(Relaxed) {
+                RESIZED_SINCE_PRESS.store(true, Relaxed);
+            }
         }
     }
+    let mc = mission_control.is_some_and(|mc| mc.0);
+    let early = mc && (MC_EARLY.load(Relaxed) || mc_early());
+    MC_EARLY.store(early, Relaxed);
+    update_motion_direct();
 }
 
 type EdgeWindows<'w, 's> = Query<
@@ -313,7 +371,13 @@ fn edge_handoffs(
             Event::MouseDown { .. } => tracker.button_down = true,
             Event::MouseUp { .. } => {
                 tracker.button_down = false;
-                tracker.hands_off_until = now + HANDS_OFF_GRACE;
+                // Emaki (#37): after a live resize the strip settles under
+                // handoffs, so nothing spills while it eases.
+                if RESIZED_SINCE_PRESS.load(std::sync::atomic::Ordering::Relaxed) {
+                    tracker.hold_after_resize = knob("resize-snap", "hold") != "snap";
+                } else {
+                    tracker.hands_off_until = now + HANDS_OFF_GRACE;
+                }
             }
             _ => {}
         }
@@ -336,14 +400,27 @@ fn edge_handoffs(
         .iter()
         .map(|(_, display, _)| display.bounds())
         .collect::<Vec<_>>();
-    if mission_control.is_some_and(|mc| mc.0) {
-        tracker.hands_off_until = now + HANDS_OFF_GRACE;
-    }
+    // Emaki (#37): Mission Control is the user's. In `early` mode a selection
+    // places windows at once, with no glass, while the overview closes.
+    let mc_open = mission_control.is_some_and(|mc| mc.0);
+    let mc_place = mc_open && MC_EARLY.load(std::sync::atomic::Ordering::Relaxed);
     // Emaki (#33): during a drop preview only the dragged window is the user's;
     // neighbours sliding aside still hand off, and no rest snap moves the strip.
     let dragged = drop.and_then(|d| d.dragged());
-    let hands_off_all = dragged.is_none() && (tracker.button_down || now < tracker.hands_off_until);
-    let snap_on = config.snap_at_display_edge();
+    // Emaki (#37): during a live resize only the resized window is the user's.
+    let live_resize = tracker.button_down
+        && RESIZED_SINCE_PRESS.load(std::sync::atomic::Ordering::Relaxed);
+    let hands_off_all = mc_open
+        || dragged.is_none()
+            && !live_resize
+            && (tracker.button_down || now < tracker.hands_off_until);
+    if live_resize {
+        tracker.hold_after_resize = true;
+    }
+    if strips.iter().any(|(_, _, _, scrolling, _)| scrolling) {
+        tracker.hold_after_resize = false;
+    }
+    let snap_on = config.snap_at_display_edge() && !tracker.hold_after_resize;
     let mut busy = false;
     let mut seen = Vec::new();
     let tracker = &mut *tracker;
@@ -479,9 +556,10 @@ fn edge_handoffs(
                 });
                 let vel = handoff.prev_overflow.map_or(0.0, |p| spill - p);
                 handoff.prev_overflow = Some(spill);
-                let hands_off = hands_off_all || dragged == Some(entity);
-                let resizing =
-                    hands_off || live.is_some_and(|l| now.saturating_sub(l.0) < LIVE_RESIZE);
+                let live_now = live.is_some_and(|l| now.saturating_sub(l.0) < LIVE_RESIZE);
+                let hands_off =
+                    hands_off_all || dragged == Some(entity) || (live_resize && live_now);
+                let resizing = hands_off || live_now;
                 if live.is_some()
                     && !resizing
                     && let Ok(mut cmd) = commands.get_entity(entity)
@@ -528,6 +606,21 @@ fn edge_handoffs(
                 }
                 let foreign = tracker.foreign.contains(&entity);
                 match handoff.phase {
+                    // Emaki (#37, early): place at once, no cover, no reply.
+                    Phase::Parked | Phase::Returning if mc_place && spill <= lim.rest_limit => {
+                        window.reposition(position.0);
+                        if let Ok(mut cmd) = commands.get_entity(entity) {
+                            cmd.try_remove::<EdgeParked>();
+                        }
+                        debug!(target: "emaki::motion", "mc: restore {id} at {spill:.3}");
+                        handoff.phase = Phase::Real;
+                        handoff.since = now;
+                    }
+                    Phase::Real | Phase::Approaching
+                        if mc_place && !foreign && spill > lim.rest_limit =>
+                    {
+                        park(&mut window, handoff, "mission control");
+                    }
                     _ if hands_off || foreign => {}
                     Phase::Real => {
                         if spill >= lim.cross {
@@ -739,12 +832,13 @@ mod tests {
     }
 
     #[test]
-    fn parking_leaves_the_remnant_in_the_outer_corner() {
+    fn parking_leaves_a_sliver_at_the_outer_edge() {
         let studio = IRect::new(0, 0, 2560, 1440);
         let slot = IRect::new(2000, 200, 2908, 1108);
+        // Shared edge on the right: the sliver shows at the left, same height.
         let o = park_origin(slot, studio, 4, 4, EdgeSide::Right);
-        assert_eq!((o.x + 4 + 900, o.y + 4), (40, 1408));
+        assert_eq!((o.x + 4 + 900, o.y + 4), (5, 204));
         let o = park_origin(slot, studio, 4, 4, EdgeSide::Left);
-        assert_eq!((o.x + 4, o.y + 4), (2520, 1408));
+        assert_eq!((o.x + 4, o.y + 4), (2555, 204));
     }
 }

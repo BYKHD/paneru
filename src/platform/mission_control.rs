@@ -28,6 +28,57 @@ pub(super) struct MissionControlHandler {
     element: Option<CFRetained<AXUIWrapper>>,
     /// An optional `AXUIWrapper` for the `AXObserver` instance.
     observer: Option<CFRetained<AXUIWrapper>>,
+    /// Emaki (#37): stops the Dock-window poller.
+    poll_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+/// Emaki (#37, ADR 0002): macOS 27.2's Dock never posts `AXExpose*`; Mission
+/// Control shows as a Dock-owned on-screen window covering a whole display.
+/// Throwaway poll at 10 Hz. ponytail: `CGWindowList` poll costs idle CPU; find a
+/// cheaper signal before release.
+fn dock_overview_visible(dock: Pid) -> bool {
+    use objc2_core_foundation::{CFDictionary, CFNumber, CFType};
+    use objc2_core_graphics::{
+        CGDisplayBounds, CGGetActiveDisplayList, CGRectMakeWithDictionaryRepresentation,
+        CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID, kCGWindowBounds,
+        kCGWindowOwnerPID,
+    };
+    let mut ids = [0u32; 16];
+    let mut count = 0u32;
+    unsafe { CGGetActiveDisplayList(16, ids.as_mut_ptr(), &raw mut count) };
+    let displays = ids[..count as usize]
+        .iter()
+        .map(|id| CGDisplayBounds(*id))
+        .collect::<Vec<_>>();
+    let Some(list) = CGWindowListCopyWindowInfo(CGWindowListOption::OptionOnScreenOnly, kCGNullWindowID)
+    else {
+        return false;
+    };
+    let list = unsafe { list.cast_unchecked::<CFDictionary<CFString, CFType>>() };
+    list.iter().any(|w| {
+        let owner = w
+            .get(unsafe { kCGWindowOwnerPID })
+            .and_then(|n| n.downcast_ref::<CFNumber>().and_then(CFNumber::as_i32));
+        if owner != Some(dock) {
+            return false;
+        }
+        let Some(bounds) = w.get(unsafe { kCGWindowBounds }) else {
+            return false;
+        };
+        let Some(bounds) = bounds.downcast_ref::<CFDictionary>() else {
+            return false;
+        };
+        let mut r = objc2_core_foundation::CGRect::default();
+        if !unsafe { CGRectMakeWithDictionaryRepresentation(Some(bounds), &raw mut r) } {
+            return false;
+        }
+        displays.iter().any(|d| {
+            (d.origin.x - r.origin.x).abs() < 2.0
+                && (d.origin.y - r.origin.y).abs() < 2.0
+                && (d.size.width - r.size.width).abs() < 2.0
+                && (d.size.height - r.size.height).abs() < 2.0
+        })
+    })
 }
 
 impl MissionControlHandler {
@@ -45,6 +96,7 @@ impl MissionControlHandler {
             events,
             element: None,
             observer: None,
+            poll_stop: None,
         }
     }
 
@@ -113,6 +165,27 @@ impl MissionControlHandler {
     /// `Ok(())` if observation is started successfully, otherwise `Err(Error)` if permissions are denied or setup fails.
     pub(super) fn observe(&mut self) -> Result<()> {
         let pid = MissionControlHandler::dock_pid()?;
+        {
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            self.poll_stop = Some(stop.clone());
+            let events = self.events.clone();
+            std::thread::spawn(move || {
+                let mut open = false;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let now = dock_overview_visible(pid);
+                    if now != open {
+                        open = now;
+                        debug!("emaki: Mission Control {}", if open { "shown" } else { "exited" });
+                        _ = events.send(if open {
+                            Event::MissionControlShowAllWindows
+                        } else {
+                            Event::MissionControlExit
+                        });
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            });
+        }
         let element = AXUIWrapper::from_retained(unsafe { AXUIElementCreateApplication(pid) })?;
         let observer = unsafe {
             let mut observer_ref: AXObserverRef = null_mut();
@@ -209,6 +282,9 @@ impl Drop for MissionControlHandler {
     /// Unobserves Mission Control notifications when the `MissionControlHandler` is dropped.
     /// This ensures that system resources are properly released when the handler is no longer needed.
     fn drop(&mut self) {
+        if let Some(stop) = self.poll_stop.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         self.unobserve();
     }
 }

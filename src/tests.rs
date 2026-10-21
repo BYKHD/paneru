@@ -2,6 +2,7 @@ mod display;
 mod drop;
 mod edge;
 mod focus_or_virtual;
+mod strip_motion;
 mod harness;
 mod interaction;
 mod mocks;

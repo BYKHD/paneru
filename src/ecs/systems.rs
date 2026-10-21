@@ -610,6 +610,12 @@ pub(super) fn animate_entities(
     let rate = drop
         .and_then(|d| d.gap_rate())
         .unwrap_or_else(|| config.animation_speed());
+    // Emaki (#37): live resizes and early Mission Control placement land at once.
+    let rate = if super::edge::MOTION_DIRECT.load(std::sync::atomic::Ordering::Relaxed) {
+        1_000_000.0
+    } else {
+        rate
+    };
     let t = ease_out_factor(rate, time.delta_secs_f64());
 
     animate
@@ -855,7 +861,24 @@ pub(super) fn window_resized_update_frame(
             continue;
         }
 
-        if old_frame.min.x != new_frame.min.x {
+        // Emaki (#37): only a left-edge drag (the right edge stayed) shifts
+        // the strip, so the side not dragged holds still. Upstream shifted on
+        // any origin difference, so a 1 px mismatch during a right-edge drag
+        // moved the left side by the whole size change.
+        let legacy = super::edge::knob("resize-rule", "fixed") == "legacy";
+        let right_kept = (old_frame.max.x - new_frame.max.x).abs() <= 2;
+        let left_moved = old_frame.min.x != new_frame.min.x;
+        let shift_strip = if legacy { left_moved } else { left_moved && right_kept };
+        debug!(
+            target: "emaki::motion",
+            "resize {window_id}: old x {}..{} new x {}..{} shift {shift_strip}{}",
+            old_frame.min.x,
+            old_frame.max.x,
+            new_frame.min.x,
+            new_frame.max.x,
+            if legacy { " (legacy)" } else { "" },
+        );
+        if shift_strip {
             let shift = (old_frame.size() - new_frame.size()).with_y(0);
             // Search marke: reposition_entity - Updating position directly to reduce jitter.
             strip_position.0.x += shift.x;
