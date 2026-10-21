@@ -861,27 +861,35 @@ pub(super) fn window_resized_update_frame(
             continue;
         }
 
-        // Emaki (#37): only a left-edge drag (the right edge stayed) shifts
-        // the strip, so the side not dragged holds still. Upstream shifted on
-        // any origin difference, so a 1 px mismatch during a right-edge drag
-        // moved the left side by the whole size change.
+        // Emaki (#37): each side's neighbours follow their own edge, so the
+        // side not dragged holds still. The strip shifts by however far the
+        // left edge moved: all of the size change for a left-edge drag, half
+        // for an Option (centred) resize, nothing for a right-edge drag.
+        // Upstream shifted by the whole size change on any origin difference,
+        // so a 1 px mismatch during a right-edge drag moved the left side and
+        // a centred resize moved only the right.
         let legacy = super::edge::knob("resize-rule", "fixed") == "legacy";
         let right_kept = (old_frame.max.x - new_frame.max.x).abs() <= 2;
-        let left_moved = old_frame.min.x != new_frame.min.x;
-        let shift_strip = if legacy { left_moved } else { left_moved && right_kept };
+        let left_moved = new_frame.min.x - old_frame.min.x;
+        let shift = if legacy {
+            (old_frame.min.x != new_frame.min.x).then(|| old_frame.width() - new_frame.width())
+        } else if right_kept {
+            Some(old_frame.width() - new_frame.width())
+        } else {
+            (left_moved.abs() > 2).then_some(left_moved)
+        };
         debug!(
             target: "emaki::motion",
-            "resize {window_id}: old x {}..{} new x {}..{} shift {shift_strip}{}",
+            "resize {window_id}: old x {}..{} new x {}..{} shift {shift:?}{}",
             old_frame.min.x,
             old_frame.max.x,
             new_frame.min.x,
             new_frame.max.x,
             if legacy { " (legacy)" } else { "" },
         );
-        if shift_strip {
-            let shift = (old_frame.size() - new_frame.size()).with_y(0);
+        if let Some(shift) = shift.filter(|s| *s != 0) {
             // Search marke: reposition_entity - Updating position directly to reduce jitter.
-            strip_position.0.x += shift.x;
+            strip_position.0.x += shift;
         }
 
         // When the user drags the top edge of a stacked window, we adjust the window above to

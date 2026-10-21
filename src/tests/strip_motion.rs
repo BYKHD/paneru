@@ -88,3 +88,29 @@ fn a_neighbour_pushed_past_the_shared_edge_parks() {
     );
     release(&mut h);
 }
+
+/// Option-drag (with Cmd: without activating) resizes about the centre: both
+/// edges move, so each side's neighbours follow their edge, by half.
+#[test]
+fn a_centred_resize_moves_both_sides_by_half() {
+    let mut h = harness(3);
+    let (left, right) = (x_of(&mut h, 0), x_of(&mut h, 2));
+    let m = Modifiers::empty();
+    let e = find_window_entity(1, h.world());
+    let Origin { x, y } = h.world().get::<Position>(e).unwrap().0;
+    let size = h.world().get::<crate::ecs::Bounds>(e).unwrap().0;
+    let at = CGPoint::new(f64::from(x + size.x), f64::from(y + 300));
+    h.world().write_message(Event::MouseDown { point: at, modifiers: m });
+    h.advance(Duration::from_millis(16));
+    for i in 1..=6 {
+        h.mock_state.os_move_window(1, Origin::new(x - 10 * i, y));
+        h.mock_state.os_resize_window(1, Size::new(size.x + 20 * i, size.y));
+        h.world().write_message(Event::MouseDragged { point: at, modifiers: m });
+        h.advance(Duration::from_millis(16));
+    }
+    h.advance(Duration::from_millis(32));
+    assert_eq!(x_of(&mut h, 0), left - 60, "left side follows the left edge");
+    assert_eq!(x_of(&mut h, 1), x - 60, "the window keeps its centre");
+    assert_eq!(x_of(&mut h, 2), right + 60, "right side follows the right edge");
+    release(&mut h);
+}
