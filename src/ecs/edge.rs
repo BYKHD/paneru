@@ -559,6 +559,9 @@ fn edge_handoffs(
                 let live_now = live.is_some_and(|l| now.saturating_sub(l.0) < LIVE_RESIZE);
                 let hands_off =
                     hands_off_all || dragged == Some(entity) || (live_resize && live_now);
+                // Mission Control moves no real window by hand: a window it
+                // brings over is the strip's, never the user's to leave across.
+                let user_moving = hands_off && !mc_open;
                 let resizing = hands_off || live_now;
                 if live.is_some()
                     && !resizing
@@ -597,7 +600,7 @@ fn edge_handoffs(
                 // is guarded, so a drag can take a window to the other display.
                 // A real window left past its switch point afterwards is the
                 // user's, until it is back inside.
-                if hands_off {
+                if user_moving {
                     if handoff.phase == Phase::Real && spill > lim.enter_at {
                         tracker.foreign.insert(entity);
                     }
@@ -620,6 +623,14 @@ fn edge_handoffs(
                         if mc_place && !foreign && spill > lim.rest_limit =>
                     {
                         park(&mut window, handoff, "mission control");
+                    }
+                    // Emaki (#37): no glass while the overview is open, but
+                    // nothing is left past the ownership change either, or
+                    // macOS gives the window to the other display.
+                    Phase::Real | Phase::Approaching
+                        if mc_open && !foreign && spill >= lim.cross =>
+                    {
+                        park(&mut window, handoff, "never-cross");
                     }
                     _ if hands_off || foreign => {}
                     Phase::Real => {
