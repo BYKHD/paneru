@@ -877,6 +877,14 @@ pub(crate) fn window_moved_update_frame(
         if matches!(unmanaged, Some(Unmanaged::Minimized | Unmanaged::Hidden)) {
             continue;
         }
+        if crate::probe::enabled() {
+            crate::probe::emit(
+                "echo",
+                std::time::Instant::now(),
+                crate::probe::now_ms(),
+                &format!("\"wid\":{window_id},\"repositioning\":{repositioning}"),
+            );
+        }
         // Our own move, echoed back: `animate_entities` lerps from the current
         // `Position`, so overwriting it with the echoed frame mid-animation
         // restarts each step from behind, and the two chase each other.
@@ -1107,11 +1115,18 @@ pub(super) fn commit_window_position(
 ) {
     // `par_iter_mut` runs on `ComputeTaskPool` worker threads, which have no
     // `CFRunLoop` of their own to drain thread-local autorelease pools.
+    let (probe_t, probe_st) = (crate::probe::now_ms(), std::time::Instant::now());
     moved_windows
         .par_iter_mut()
         .for_each(|(mut window, position)| {
             objc2::rc::autoreleasepool(|_| window.reposition(position.0));
         });
+    crate::probe::emit(
+        "commit",
+        probe_st,
+        probe_t,
+        &format!("\"n\":{}", moved_windows.iter().count()),
+    );
 }
 
 #[instrument(level = Level::TRACE, skip_all)]

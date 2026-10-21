@@ -23,6 +23,7 @@ mod menubar;
 mod overlay;
 mod pasteboard;
 mod platform;
+mod probe;
 mod reader;
 mod util;
 
