@@ -24,6 +24,7 @@ mod overlay;
 mod owned;
 mod pasteboard;
 mod platform;
+mod probe;
 mod reader;
 mod util;
 

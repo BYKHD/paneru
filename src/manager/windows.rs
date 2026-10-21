@@ -351,17 +351,37 @@ impl WindowOS {
             return;
         };
         let attr = CFString::from_static_str("AXEnhancedUserInterface");
-        let enabled = app_element
-            .get_attribute::<CFBoolean>(&attr)
-            .is_ok_and(|v| CFBoolean::value(&v));
+        let (probe_t, probe_st) = (crate::probe::now_ms(), std::time::Instant::now());
+        let read = app_element.get_attribute::<CFBoolean>(&attr);
+        let enabled = read.as_ref().is_ok_and(|v| CFBoolean::value(v));
+        crate::probe::emit(
+            "eui_read",
+            probe_st,
+            probe_t,
+            &format!(
+                "\"pid\":{pid},\"ok\":{},\"val\":{enabled},\"err\":\"{}\"",
+                read.is_ok(),
+                read.as_ref()
+                    .err()
+                    .map(|e| e.to_string().replace('"', "'"))
+                    .unwrap_or_default()
+            ),
+        );
         if enabled {
-            unsafe {
+            let (probe_t, probe_st) = (crate::probe::now_ms(), std::time::Instant::now());
+            let err = unsafe {
                 AXUIElementSetAttributeValue(
                     app_element.as_ptr(),
                     attr.as_ref(),
                     kCFBooleanFalse.unwrap(),
-                );
-            }
+                )
+            };
+            crate::probe::emit(
+                "eui_set",
+                probe_st,
+                probe_t,
+                &format!("\"pid\":{pid},\"val\":false,\"err\":{}", err),
+            );
             // Incremented rather than set: two windows of the same app can race
             // here and both owe a matching `reenable_enhanced_ui`; setting 1
             // would let the second one decrement past zero.
@@ -402,13 +422,20 @@ impl WindowOS {
         drop(counts);
         if let Some(app_element) = self.app_reference() {
             let attr = CFString::from_static_str("AXEnhancedUserInterface");
-            unsafe {
+            let (probe_t, probe_st) = (crate::probe::now_ms(), std::time::Instant::now());
+            let err = unsafe {
                 AXUIElementSetAttributeValue(
                     app_element.as_ptr(),
                     attr.as_ref(),
                     kCFBooleanTrue.unwrap(),
-                );
-            }
+                )
+            };
+            crate::probe::emit(
+                "eui_set",
+                probe_st,
+                probe_t,
+                &format!("\"pid\":{pid},\"val\":true,\"err\":{}", err),
+            );
         }
     }
 
@@ -424,13 +451,30 @@ impl WindowOS {
             )
         };
         if let Ok(position) = AXUIWrapper::from_retained(position_ref) {
-            unsafe {
+            let (probe_t, probe_st) = (crate::probe::now_ms(), std::time::Instant::now());
+            let err = unsafe {
                 AXUIElementSetAttributeValue(
                     self.ax_element.as_ptr(),
                     CFString::from_static_str(kAXPositionAttribute).as_ref(),
                     position.as_ref(),
                 )
             };
+            if crate::probe::enabled() {
+                crate::probe::emit(
+                    "pos",
+                    probe_st,
+                    probe_t,
+                    &format!(
+                        "\"pid\":{},\"wid\":{},\"x\":{},\"y\":{},\"err\":{},\"absent\":{}",
+                        self.pid().unwrap_or(0),
+                        self.id(),
+                        point.x,
+                        point.y,
+                        err,
+                        self.enhanced_ui_absent.load(Ordering::Relaxed)
+                    ),
+                );
+            }
             let size = self.frame.size();
             self.frame.min = origin;
             self.frame.max = origin + size;

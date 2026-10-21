@@ -437,7 +437,15 @@ impl WindowNotification {
     fn into_event(self, window_id: WinID) -> Event {
         match self {
             Self::Focused => Event::WindowFocused { window_id },
-            Self::Moved => Event::WindowMoved { window_id },
+            Self::Moved => {
+                crate::probe::emit(
+                    "notif_moved",
+                    std::time::Instant::now(),
+                    crate::probe::now_ms(),
+                    &format!("\"wid\":{window_id}"),
+                );
+                Event::WindowMoved { window_id }
+            }
             Self::Resized => Event::WindowResized { window_id },
             Self::MenuOpened => Event::MenuOpened { window_id },
             Self::MenuClosed => Event::MenuClosed { window_id },
