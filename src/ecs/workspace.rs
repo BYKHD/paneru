@@ -387,6 +387,10 @@ fn detect_moved_windows(
         }
 
         debug!("Window {entity} moved to workspace {workspace_id}.");
+        // Emaki (#37): parked for its old display; it is real on this one.
+        if let Ok(mut cmd) = ctx.commands.get_entity(entity) {
+            cmd.try_remove::<crate::ecs::edge::EdgeParked>();
+        }
         let moving_entities = workspaces
             .iter()
             .find_map(|(strip, _, _)| strip.tab_group(entity))

@@ -254,7 +254,8 @@ fn mission_control_never_leaves_a_window_across() {
     harness
         .world()
         .insert_resource(crate::ecs::MissionControlActive(false));
-    harness.advance(std::time::Duration::from_millis(100));
+    // Once the layout has settled.
+    harness.advance(std::time::Duration::from_millis(300));
     assert!(probe.parked(&mut harness), "{}", probe.phase(&mut harness));
     assert_eq!(probe.committed(&mut harness).max.x, 5);
 }
@@ -316,4 +317,24 @@ fn a_parked_window_mission_control_moves_joins_its_new_display() {
     assert!(!probe.parked(&mut harness), "{}", probe.phase(&mut harness));
     let committed = probe.committed(&mut harness);
     assert!(n.contains(committed.center()), "{committed:?}");
+}
+
+#[test]
+fn a_stale_position_as_mission_control_closes_does_not_park() {
+    // Emaki (#37): for a frame or two after the overview closes, positions are
+    // still the overview's until the strips are laid out again. Parking on them
+    // flicks a window out and straight back. Seen live on 2026-10-22.
+    let mut harness = harness();
+    let probe = Probe::new(&mut harness, 1);
+    set_mission_control(&mut harness, true);
+    let past = TEST_DISPLAY_WIDTH - probe.slot(&mut harness).min.x + 20;
+    probe.shift(&mut harness, past);
+    harness
+        .world()
+        .insert_resource(crate::ecs::MissionControlActive(false));
+    harness.advance(std::time::Duration::from_millis(FRAME_MS));
+    assert!(!probe.parked(&mut harness), "{}", probe.phase(&mut harness));
+    probe.shift(&mut harness, -past);
+    harness.advance(std::time::Duration::from_millis(300));
+    assert!(!probe.parked(&mut harness), "{}", probe.phase(&mut harness));
 }

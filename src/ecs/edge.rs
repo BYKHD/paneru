@@ -63,6 +63,9 @@ const RETURN_CAP: Duration = Duration::from_millis(400);
 const LIVE_RESIZE: Duration = Duration::from_millis(300);
 /// After a drag, resize or Mission Control ends, handoffs wait this long.
 const HANDS_OFF_GRACE: Duration = Duration::from_millis(500);
+/// Emaki (#37): after Mission Control closes, positions are still the
+/// overview's until the strips are laid out again; nothing parks meanwhile.
+const MC_SETTLE: Duration = Duration::from_millis(100);
 /// Emaki (#44, #46): a parked window leaves this much at its owning display's
 /// outer edge.
 const SLIVER: i32 = 5;
@@ -184,6 +187,7 @@ struct EdgeTracker {
     hold_after_resize: bool,
     /// Emaki (#37): Mission Control was open last frame.
     mc_was_open: bool,
+    mc_settle_until: Duration,
     /// Real windows the user put past the edge: left alone, not parked back.
     foreign: std::collections::HashSet<Entity>,
     windows: HashMap<Entity, Handoff>,
@@ -421,15 +425,17 @@ fn edge_handoffs(
     // The click that closed the overview dragged no real window: no grace.
     if mc_closing {
         tracker.hands_off_until = now;
+        tracker.mc_settle_until = now + MC_SETTLE;
     }
     tracker.mc_was_open = mc_open;
+    let mc_hold = mc_open || now < tracker.mc_settle_until;
     // Emaki (#33): during a drop preview only the dragged window is the user's;
     // neighbours sliding aside still hand off, and no rest snap moves the strip.
     let dragged = drop.and_then(|d| d.dragged());
     // Emaki (#37): during a live resize only the resized window is the user's.
     let live_resize =
         tracker.button_down && RESIZED_SINCE_PRESS.load(std::sync::atomic::Ordering::Relaxed);
-    let hands_off_all = mc_open
+    let hands_off_all = mc_hold
         || dragged.is_none()
             && !live_resize
             && (tracker.button_down || now < tracker.hands_off_until);
@@ -581,7 +587,7 @@ fn edge_handoffs(
                 // Emaki (#37): a window Mission Control moved is placed in the
                 // right strip once it closes; it is not the user's to leave
                 // across.
-                let user_moving = hands_off && !mc_open;
+                let user_moving = hands_off && !mc_hold;
                 let resizing = hands_off || live_now;
                 if live.is_some()
                     && !resizing
